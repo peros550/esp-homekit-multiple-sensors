@@ -1,6 +1,7 @@
-PROGRAM = sonoff_dual_lights
+PROGRAM = multiple_sensors
 
 EXTRA_COMPONENTS = \
+	extras/dht \
 	extras/http-parser \
 	extras/dhcpserver \
 	$(abspath ../../components/wifi_config) \
@@ -8,11 +9,14 @@ EXTRA_COMPONENTS = \
 	$(abspath ../../components/cJSON) \
 	$(abspath ../../components/homekit)
 
-FLASH_SIZE ?= 8
-FLASH_MODE ?= dout
-FLASH_SPEED ?= 40
-HOMEKIT_SPI_FLASH_BASE_ADDR ?= 0x7A000
+# DHT22 sensor pin
+SENSOR_PIN ?= 5
 
-EXTRA_CFLAGS += -I../.. -DHOMEKIT_SHORT_APPLE_UUIDS
+FLASH_SIZE ?= 32
+
+EXTRA_CFLAGS += -I../.. -DHOMEKIT_SHORT_APPLE_UUIDS -DSENSOR_PIN=$(SENSOR_PIN)
 
 include $(SDK_PATH)/common.mk
+
+monitor:
+	$(FILTEROUTPUT) --port $(ESPPORT) --baud 115200 --elf $(PROGRAM_OUT)
