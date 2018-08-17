@@ -21,10 +21,14 @@ For all these to work, I used a wemos D1 mini board, a motion sensor (HC-SR501 o
 
 Here are the pins used on the wemos: 
 
-A0  Ligh sensor analog output
-D1  DHT22 data pin
-D2  Push button
-D5  Motion Sensor
+-A0  Ligh sensor analog output
+
+-D1  DHT22 data pin
+
+-D2  Push button
+
+-D5  Motion Sensor
+
 
 # Future work could include: 
 
