@@ -5,24 +5,28 @@
 #include <esp8266.h>
 #include <FreeRTOS.h>
 #include <task.h>
+#include <esplibs/libmain.h>
 
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 #include "wifi_config.h"
 
 #include <dht/dht.h>
+#include <adv_button.h>
 
-#include "button.h"
 
-// The GPIO pin that is connected to the LED on the ESP Device. On Wemos D1 mini it is pin 2 (D4), on Sonoff it is pin 13. 
-const int led_gpio = 2;
-// The GPIO pin that is oconnected to the button on the ESP Device. On Wemos D1 mini I selected Pin 4 (D2) where I connected a button. On Sonoff the on board button is on pin 0. 
-const int button_gpio = 4; 
-//The GPIO pin that motion sensor is connected. 
-const int motion_sensor_gpio = 14;
-
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+const int led_gpio = 2; // Pin D4
+const int button_gpio = 4; //Pin (D2) 
+const int motion_sensor_gpio = 16; // Wemos D1 mini pin: D0 
+const int SENSOR_PIN = 5; //DHT sensor on pin D1
+const int IR_PIN = 14 ; // Wemos D1 mini pin: D5. 
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 bool led_value = false; //This is to keep track of the LED status. 
+volatile float old_humidity_value = 0.0, old_temperature_value = 0.0 , old_light_value =0.0, old_move_value = 0.0;
+ETSTimer extra_func_timer ;
+
 homekit_characteristic_t temperature = HOMEKIT_CHARACTERISTIC_(CURRENT_TEMPERATURE, 0);
 homekit_characteristic_t humidity    = HOMEKIT_CHARACTERISTIC_(CURRENT_RELATIVE_HUMIDITY, 0);
 //Additional for Motion
@@ -31,9 +35,7 @@ homekit_characteristic_t currentAmbientLightLevel = HOMEKIT_CHARACTERISTIC_(CURR
 homekit_characteristic_t name = HOMEKIT_CHARACTERISTIC_(NAME, "Sonoff Switch");
 
 
-#ifndef SENSOR_PIN
-#error SENSOR_PIN is not specified
-#endif
+
 
 void identify_task(void *_args) {
     vTaskDelete(NULL);
@@ -43,8 +45,6 @@ void identify(homekit_value_t _value) {
     printf("identify\n");
     xTaskCreate(identify_task, "identify", 128, NULL, 2, NULL);
 }
-
-void button_callback(uint8_t gpio, button_event_t event);
 
 void led_write(bool on) {
     gpio_write(led_gpio, on ? 0 : 1);
@@ -62,21 +62,13 @@ void reset_configuration_task() {
     }
     
     printf("Resetting Wifi Config\n");
-    
     wifi_config_reset();
-    
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    
     printf("Resetting HomeKit Config\n");
-    
     homekit_server_reset();
-    
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    
     printf("Restarting\n");
-    
     sdk_system_restart();
-    
     vTaskDelete(NULL);
 }
 
@@ -86,65 +78,103 @@ void reset_configuration() {
 }
 
 
-
-
-
-
-
-void motion_sensor_callback(uint8_t gpio) {
-
-    if (gpio == motion_sensor_gpio){
-		
-		  uint16_t val = sdk_system_adc_read();
-   			//float val2 = (3.2 / 1023.0);
-			//val2 = val * val2;
-				//printf ("ADC voltage is %f\n",  val2);
-				printf ("ADC voltage is %d\n",  val);
-		//printf ("ADC voltage is %.3f\n", sdk_system_adc_read());
-		//currentAmbientLightLevel = val;
-		
-		//homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT(val));
+void sensor_worker() {
+//Temperature measurement
+   	float humidity_value, temperature_value;
+    bool get_temp = false;
+     
+        get_temp = dht_read_float_data(DHT_TYPE_DHT22, SENSOR_PIN, &humidity_value, &temperature_value);
+        if (get_temp) {
+       // printf("RC >>> Sensor: temperature %g, humidity %g\n", temperature_value, humidity_value);
+        
+			if (temperature_value != old_temperature_value) {
+				old_temperature_value = temperature_value;
+				
+			//	current_temperature.value = HOMEKIT_FLOAT(temperature_value); //Update AC current temp
+			//	homekit_characteristic_notify(&current_temperature, HOMEKIT_FLOAT(temperature_value));
+				
+				temperature.value.float_value = temperature_value;
+				homekit_characteristic_notify(&temperature, HOMEKIT_FLOAT(temperature_value));
+			}
+				
 	
-        int new = 0;
-        new = gpio_read(motion_sensor_gpio);
-        motion_detected.value = HOMEKIT_BOOL(new);
-
-	led_write(new);
-
-
-        homekit_characteristic_notify(&motion_detected, HOMEKIT_BOOL(new));
-        printf("Motion Detected on %d\n", gpio);
-    }
-    else {
-        printf("Interrupt on %d", gpio);
-
-    }
-
-}
-
-
-void button_callback(uint8_t gpio, button_event_t event) {
-    switch (event) {
-        case button_event_single_press:
-           printf("Toggling relay\n");
-led_write(!led_value); //A Single press will just toggle the LED. This was left for testing purposes. 
-            //The following code is left commented in case we want to implement a single button for something else in homekit. 
-			//switch_on.value.bool_value = !switch_on.value.bool_value;
-            //relay_write(switch_on.value.bool_value);
-            //homekit_characteristic_notify(&switch_on, switch_on.value);
+			if (humidity_value != old_humidity_value) {
+				old_humidity_value = humidity_value;
+				humidity.value.float_value =humidity_value;
+				//current_humidity.value = HOMEKIT_FLOAT(humidity_value);
+				//homekit_characteristic_notify(&current_humidity, current_humidity.value);
+				 homekit_characteristic_notify(&humidity, HOMEKIT_FLOAT(humidity_value));
+			}
+				
 			
-			  
+			
+		} else 
+		{
+        printf("RC !!! ERROR Sensor\n");
+        //led_code(LED_GPIO, SENSOR_ERROR);
+        
+		}
+
+	//printf("Checking Light\n");
+	//Light measurement
+	float light_value;
+	light_value = sdk_system_adc_read();
+	 	 if (light_value != old_light_value) 
+		 {
+		 old_light_value = light_value;
+		 currentAmbientLightLevel.value.float_value = (1024 - light_value);
+		 homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT((1024 - light_value))); 
+		}
 		
-			
-            break;
-        case button_event_long_press:
-	printf("Resetting Wifi\n");
-            reset_configuration();
-            break;
-        default:
-            printf("Unknown button event: %d\n", event);
-    }
+		uint32_t freeheap = xPortGetFreeHeapSize();
+    //printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
+	 
+
 }
+
+
+
+void movement_detected_fn(const uint8_t gpio) {
+	printf("Movement detected\n");
+	old_move_value = true;
+	motion_detected.value = HOMEKIT_BOOL(old_move_value);
+	led_write(old_move_value);
+	homekit_characteristic_notify(&motion_detected, HOMEKIT_BOOL(old_move_value));
+	
+}
+
+void movement_not_detected_fn(const uint8_t gpio) {
+	printf("Movement not detected\n");
+
+	old_move_value = false;
+	motion_detected.value = HOMEKIT_BOOL(old_move_value);
+	led_write(old_move_value);
+	homekit_characteristic_notify(&motion_detected, HOMEKIT_BOOL(old_move_value));
+}
+
+
+void button_callback_single(const uint8_t gpio) {
+
+	printf("Toggling relay\n");
+	led_write(!led_value); //A Single press will just toggle the LED. This was left for testing purposes. 
+	//The following code is left commented in case we want to implement a single button for something else in homekit. 
+	//switch_on.value.bool_value = !switch_on.value.bool_value;
+	//relay_write(switch_on.value.bool_value);
+	//homekit_characteristic_notify(&switch_on, switch_on.value);
+
+	//http_get_task(1);
+	// xTaskCreate(http_get_task, "http", 256, NULL, 1, NULL);
+	//vTaskDelay(100 / portTICK_PERIOD_MS);
+			
+}
+
+
+void button_hold_callback(const uint8_t gpio) {
+	printf("Resetting Wifi\n");
+    reset_configuration();
+           
+}
+
 
 void temperature_sensor_identify(homekit_value_t _value) {
     printf("Temperature sensor identify\n");
@@ -154,47 +184,7 @@ void light_sensor_identify(homekit_value_t _value) {
     printf("Light sensor identify\n");
 }
 
-void temperature_sensor_task(void *_args) {
-    gpio_set_pullup(SENSOR_PIN, false, false);
 
-    float humidity_value, temperature_value;
-    while (1) {
-        bool success = dht_read_float_data(
-            DHT_TYPE_DHT22, SENSOR_PIN,
-            &humidity_value, &temperature_value
-        );
-        if (success) {
-            temperature.value.float_value = temperature_value;
-            humidity.value.float_value = humidity_value;
-
-            homekit_characteristic_notify(&temperature, HOMEKIT_FLOAT(temperature_value));
-            homekit_characteristic_notify(&humidity, HOMEKIT_FLOAT(humidity_value));
-        } else {
-            printf("Couldnt read data from sensor\n");
-        }
-
-        vTaskDelay(6000 / portTICK_PERIOD_MS);
-    }
-}
-void temperature_sensor_init() {
-    xTaskCreate(temperature_sensor_task, "Temperature Sensor", 256, NULL, 2, NULL);
-}
-
-void light_sensor_task(void *_args) {
-    uint16_t analog_light_value;
-    while (1) {
-         analog_light_value = sdk_system_adc_read();
-		 //The below code does not produce accurate LUX readings which is what homekit expects. It only provides an indication of brightness on a scale between 0 to 1024
-		//More work needs to be done so that accurate conversation to LUX scale can take place. However this is strongly dependent on the type of sensor used. 
-		//In my case I used a Photodiode Light Sensor 
-            currentAmbientLightLevel.value.float_value = (1024 - analog_light_value);
-            homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT((1024 - analog_light_value)));
-            vTaskDelay(3000 / portTICK_PERIOD_MS);
-    }
-}
-void light_sensor_init() {
-    xTaskCreate(light_sensor_task, "Light Sensor", 256, NULL, 2, NULL);
-}
 
 
 
@@ -278,35 +268,54 @@ homekit_server_config_t config = {
     .password = "111-11-111"
 };
 
-void on_wifi_ready() {
+// void on_wifi_ready() {
+//     homekit_server_init(&config);
+
+//     sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
+// 	sdk_os_timer_disarm(&extra_func_timer);
+//     sdk_os_timer_arm(&extra_func_timer, 10000, 1);
+// }
+
+void on_wifi_event(wifi_config_event_t event) {
+    if (event == WIFI_CONFIG_CONNECTED) {
+        printf("Connected to WiFi\n");
+
     homekit_server_init(&config);
+
+    sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
+	sdk_os_timer_disarm(&extra_func_timer);
+    sdk_os_timer_arm(&extra_func_timer, 10000, 1);
+
+    } else if (event == WIFI_CONFIG_DISCONNECTED) {
+        printf("Disconnected from WiFi\n");
+    }
 }
 
 
 void gpio_init() {
     gpio_enable(led_gpio, GPIO_OUTPUT);
     led_write(true);
-//gpio_enable(button_gpio, GPIO_INPUT);
 
-	gpio_enable(motion_sensor_gpio, GPIO_INPUT);
-    gpio_set_pullup(motion_sensor_gpio, false, false);
-    gpio_set_interrupt(motion_sensor_gpio, GPIO_INTTYPE_EDGE_ANY, motion_sensor_callback); 
+
+    adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
+    adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
+    adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
     
+
+    adv_button_create(button_gpio, true);
+    adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
+    adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);	
+
 }
 
 
 void user_init(void) {
     uart_set_baud(0, 115200);
-    wifi_config_init("Homekit-sensor", NULL, on_wifi_ready);
+   // wifi_config_init("Homekit-sensor", NULL, on_wifi_ready);
+    wifi_config_init("Homekit-sensor", NULL, on_wifi_event);
 	gpio_init();
 	create_accessory_name();
-    temperature_sensor_init();
-	light_sensor_init();
-
- if (button_create(button_gpio, 0, 4000, button_callback)) {
-        printf("Failed to initialize button\n");
-    }
-  
+ 
 }
 
 

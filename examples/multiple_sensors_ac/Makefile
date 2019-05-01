@@ -1,4 +1,4 @@
-PROGRAM = multiple_sensors
+PROGRAM = multiple_sensors_ac
 
 EXTRA_COMPONENTS = \
     extras/onewire \
@@ -11,7 +11,8 @@ EXTRA_COMPONENTS = \
 	$(abspath ../../components/wifi_config) \
 	$(abspath ../../components/wolfssl) \
 	$(abspath ../../components/cJSON) \
-	$(abspath ../../components/homekit)
+	$(abspath ../../components/homekit)\
+	$(abspath ../../components/esp-ir)
 
 FLASH_SIZE = 8
 FLASH_MODE = dout
@@ -22,8 +23,8 @@ HOMEKIT_MAX_CLIENTS = 16
 HOMEKIT_SMALL = 0
 
 EXTRA_CFLAGS += -I../.. -DHOMEKIT_SHORT_APPLE_UUIDS
-EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_VERIFY
-EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_SETUP
+#EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_VERIFY
+#EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_SETUP
 
 ## DEBUG
 #EXTRA_CFLAGS += -DHOMEKIT_DEBUG=1
