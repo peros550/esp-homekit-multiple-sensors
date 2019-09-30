@@ -312,7 +312,7 @@ void gpio_init() {
 void user_init(void) {
     uart_set_baud(0, 115200);
    // wifi_config_init("Homekit-sensor", NULL, on_wifi_ready);
-    wifi_config_init("Homekit-sensor", NULL, on_wifi_event);
+    wifi_config_init2("Homekit-sensor", NULL, on_wifi_event);
 	gpio_init();
 	create_accessory_name();
  
