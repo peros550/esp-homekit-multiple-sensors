@@ -35,7 +35,7 @@
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 #define	USE_THINGSPEAK 0 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
 #define WEB_SERVER "api.thingspeak.com"
-#define API_KEY  "xxxxxxxxxxxxx" //Private API key. This is personal and can been  obtained by ThingsSpeak.com
+#define API_KEY  "XXX" //Private API key. This is personal and can been  obtained by ThingsSpeak.com
 #define FIELD1 "field1=" //temp
 #define FIELD2 "field2=" //hum
 #define WEB_PORT "80"

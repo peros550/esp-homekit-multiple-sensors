@@ -1,21 +1,21 @@
-[submodule "components/cJSON"]
-	path = components/cJSON
-	url = https://github.com/maximkulkin/esp-cjson
-[submodule "components/wolfssl"]
-	path = components/wolfssl
-	url = https://github.com/maximkulkin/esp-wolfssl
-[submodule "components/homekit"]
-	path = components/homekit
-	url = https://github.com/maximkulkin/esp-homekit
 [submodule "components/http-parser"]
 	path = components/http-parser
 	url = https://github.com/maximkulkin/esp-http-parser.git
-[submodule "components/wifi_config"]
-	path = components/wifi_config
-	url = https://github.com/maximkulkin/esp-wifi-config
-[submodule "components/WS2812FX"]
-	path = components/WS2812FX
-	url = https://github.com/pcsaito/WS2812FX-rtos
 [submodule "components/esp-ir"]
 	path = components/esp-ir
 	url = https://github.com/maximkulkin/esp-ir
+[submodule "components/common/wolfssl"]
+	path = components/common/wolfssl
+	url = https://github.com/maximkulkin/esp-wolfssl
+[submodule "components/common/homekit"]
+	path = components/common/homekit
+	url = https://github.com/maximkulkin/esp-homekit
+[submodule "components/esp-8266/WS2812FX"]
+	path = components/esp-8266/WS2812FX
+	url = https://github.com/pcsaito/WS2812FX-rtos
+[submodule "components/esp-8266/wifi_config"]
+	path = components/esp-8266/wifi_config
+	url = https://github.com/maximkulkin/esp-wifi-config
+[submodule "components/esp-8266/cJSON"]
+	path = components/esp-8266/cJSON
+	url = https://github.com/maximkulkin/esp-cjson
