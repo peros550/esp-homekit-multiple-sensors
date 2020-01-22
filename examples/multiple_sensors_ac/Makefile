@@ -12,7 +12,9 @@ EXTRA_COMPONENTS = \
 	$(abspath ../../components/common/wolfssl) \
 	$(abspath ../../components/esp-8266/cJSON) \
 	$(abspath ../../components/common/homekit)\
-	$(abspath ../../components/esp-ir)
+	$(abspath ../../components/esp-ir)\
+	$(abspath ../../components/UDPlogger)
+
 
 FLASH_SIZE = 8
 FLASH_MODE = dout
@@ -22,9 +24,16 @@ HOMEKIT_SPI_FLASH_BASE_ADDR = 0x8c000
 HOMEKIT_MAX_CLIENTS = 16
 HOMEKIT_SMALL = 0
 
+##AYto einai gia to hostname
+
+
 EXTRA_CFLAGS += -I../.. -DHOMEKIT_SHORT_APPLE_UUIDS
 #EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_VERIFY
 #EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_SETUP
+#EXTRA_CFLAGS += -DUDPLOG_PRINTF_TO_UDP
+#EXTRA_CFLAGS += -DUDPLOG_PRINTF_ALSO_SERIAL
+EXTRA_CFLAGS += -DLWIP_NETIF_HOSTNAME=1
+EXTRA_CFLAGS += -DconfigUSE_TRACE_FACILITY
 
 ## DEBUG
 #EXTRA_CFLAGS += -DHOMEKIT_DEBUG=1

@@ -1,6 +1,3 @@
-[submodule "components/http-parser"]
-	path = components/http-parser
-	url = https://github.com/maximkulkin/esp-http-parser.git
 [submodule "components/esp-ir"]
 	path = components/esp-ir
 	url = https://github.com/maximkulkin/esp-ir
@@ -19,3 +16,6 @@
 [submodule "components/esp-8266/cJSON"]
 	path = components/esp-8266/cJSON
 	url = https://github.com/maximkulkin/esp-cjson
+[submodule "components/UDPlogger"]
+	path = components/UDPlogger
+	url = https://github.com/HomeACcessoryKid/UDPlogger

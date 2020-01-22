@@ -18,6 +18,10 @@
 #include <ir/ir.h>
 #include <ir/raw.h>
 //#include "http.h"
+ #include <udplogger.h>
+
+#include <lwip/dhcp.h>
+
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 #include <unistd.h>
@@ -32,15 +36,32 @@
 #include "lwip/netdb.h"
 #include "lwip/dns.h"
 
+#include "ac_commands.h"
+
+#define UDPLOG_PRINTF_TO_UDP
+#define UDPLOG_PRINTF_ALSO_SERIAL
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+#define DEVICE_MANUFACTURER "Unknown"
+#define DEVICE_NAME "MultiSensor"
+#define DEVICE_MODEL "esp8266"
+char serial_value[13];  //Device Serial is set upon boot based on MAC address
+#define FW_VERSION "1.0"
+
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 #define	USE_THINGSPEAK 0 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
 #define WEB_SERVER "api.thingspeak.com"
-#define API_KEY  "XXX" //Private API key. This is personal and can been  obtained by ThingsSpeak.com
+#define API_KEY  "xxx" //Aigaleo Private API key. This is personal and can been  obtained by ThingsSpeak.com
 #define FIELD1 "field1=" //temp
 #define FIELD2 "field2=" //hum
 #define WEB_PORT "80"
 #define WEB_PATH "/update?api_key="
 #define THINGSPEAK_INTERVAL 600000 //600000 = 10min , 300000 = 5min 60000 = 1min
+#define NUMBER_OF_RETRIES 5
+bool Http_TaskStarted = false;
+
+TaskHandle_t callThingsProcess_handle = NULL;
+
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -54,13 +75,18 @@ const int IR_PIN = 14 ; // Wemos D1 mini pin: D5. (Just for Reference)
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
-
 volatile float old_humidity_value = 0.0, old_temperature_value = 0.0 , old_light_value =0.0, old_move_value = 0.0;
-volatile int current_ac_state = 0;
+//AC related variables
+volatile int stored_active_state = 0;
+volatile int current_ac_mode = 0; //0=Automatic , 1=Heater , 2=Cool
+volatile int current_ac_temp = 0;
+
 volatile bool paired = false;
 bool led_value = false; //This is to keep track of the LED status. 
 volatile bool Wifi_Connected = false; 
 
+bool extra_function_TaskStarted = false;
+bool param_started = false;
 ETSTimer extra_func_timer ;
 
 void on_update(homekit_characteristic_t *ch, homekit_value_t value, void *context) {
@@ -75,245 +101,267 @@ void on_active_change(homekit_characteristic_t *ch, homekit_value_t value, void 
     update_active();
 }
 
+////%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+
+
+//following code thanks to @maccoylton at https://github.com/maccoylton/esp-homekit-common-functions/blob/master/shared_functions/shared_functions.c
+//* configUSE_TRACE_FACILITY must be defined as 1 in FreeRTOSConfig.h , or in makefile: EXTRA_CFLAGS += -DconfigUSE_TRACE_FACILITY
+// * uxTaskGetSystemState() to be available.
+TaskHandle_t task_stats_task_handle = NULL;
+void task_stats_task ( void *args)
+{
+    TaskStatus_t *pxTaskStatusArray;
+    UBaseType_t uxArraySize, x;
+    uint32_t ulTotalRunTime;
+    unsigned long ulStatsAsPercentage;
+    
+    
+    printf ("%s", __func__);
+    
+    while (1) {
+        /* Take a snapshot of the number of tasks in case it changes while this
+         function is executing. */
+        uxArraySize = uxTaskGetNumberOfTasks();
+        
+        printf (", uxTaskGetNumberOfTasks %ld", uxArraySize);
+        /* Allocate a TaskStatus_t structure for each task.  An array could be
+         allocated statically at compile time. */
+        pxTaskStatusArray = pvPortMalloc( uxArraySize * sizeof( TaskStatus_t ) );
+        
+        printf (", pvPortMalloc");
+        
+        if( pxTaskStatusArray != NULL )
+        {
+            /* Generate raw status information about each task. */
+            uxArraySize = uxTaskGetSystemState( pxTaskStatusArray,
+                                               uxArraySize,
+                                               &ulTotalRunTime );
+            
+            printf (", uxTaskGetSystemState, ulTotalRunTime %d, array size %ld\n", ulTotalRunTime, uxArraySize);
+            
+            /* Avoid divide by zero errors. */
+            /*        if( ulTotalRunTime > 0 )
+             {*/
+            /* For each populated position in the pxTaskStatusArray array,
+             format the raw data as human readable ASCII data. */
+            for( x = 0; x < uxArraySize; x++ )
+            {
+                /* What percentage of the total run time has the task used?
+                 This will always be rounded down to the nearest integer.
+                 ulTotalRunTimeDiv100 has already been divided by 100. */
+                ulStatsAsPercentage =
+                pxTaskStatusArray[ x ].ulRunTimeCounter / ulTotalRunTime / 100;
+                
+                
+                printf ( "Name:%-20s,  Runtime Counter:%-3d, Current State:%-3d, Current Priority:%-5ld, Base Priority:%-5ld, High Water Mark (bytes) %-5d\n",
+                        pxTaskStatusArray[ x ].pcTaskName,
+                        pxTaskStatusArray[ x ].ulRunTimeCounter,
+                        pxTaskStatusArray[ x ].eCurrentState,
+                        pxTaskStatusArray[ x ].uxCurrentPriority ,
+                        pxTaskStatusArray[ x ].uxBasePriority,
+                        pxTaskStatusArray[x].usStackHighWaterMark);
+                
+                /*                printf ( " Runtime Percentage:%lu,",ulStatsAsPercentage);*/
+                
+            }
+            /*        }*/
+            
+            /* The array is no longer needed, free the memory it consumes. */
+            vPortFree( pxTaskStatusArray );
+            printf ("%s, vPortFree\n", __func__);
+        }
+        vTaskDelay((30000) / portTICK_PERIOD_MS);
+    }
+    
+}
+
+void switch_on_callback(homekit_characteristic_t *_ch, homekit_value_t on, void *context);
+homekit_characteristic_t switch_on = HOMEKIT_CHARACTERISTIC_(
+    ON, false, .callback=HOMEKIT_CHARACTERISTIC_CALLBACK(switch_on_callback)
+);
+
+
+
+void switch_on_callback(homekit_characteristic_t *_ch, homekit_value_t on, void *context) {
+
+   
+    printf("Task Stats\n");
+    if (switch_on.value.bool_value)
+        {
+            if (task_stats_task_handle == NULL){
+                xTaskCreate(task_stats_task, "task_stats_task", 512 , NULL, tskIDLE_PRIORITY+1, &task_stats_task_handle);
+            } else {
+                printf ("%s task_Status_set TRUE, but task pointer not NULL\n", __func__);
+            }
+        }
+    else
+    {
+        if (task_stats_task_handle != NULL){
+            vTaskDelete (task_stats_task_handle);
+            task_stats_task_handle = NULL;
+        } else {
+            printf ("%s task_Status_set FALSE, but task pointer is NULL\n", __func__);
+        }
+
+        
+    }
+    
+}
+// //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+//Temperature, Humidity sensors
 homekit_characteristic_t temperature = HOMEKIT_CHARACTERISTIC_(CURRENT_TEMPERATURE, 0);
 homekit_characteristic_t humidity    = HOMEKIT_CHARACTERISTIC_(CURRENT_RELATIVE_HUMIDITY, 0);
-//homekit_characteristic_t target_temperature  = HOMEKIT_CHARACTERISTIC_(TARGET_TEMPERATURE, 22, .callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_temp_update));
-//Additional for Motion
+//Additional for Motion Sensor
 homekit_characteristic_t motion_detected  = HOMEKIT_CHARACTERISTIC_(MOTION_DETECTED, 0);
 homekit_characteristic_t currentAmbientLightLevel = HOMEKIT_CHARACTERISTIC_(CURRENT_AMBIENT_LIGHT_LEVEL, 0,.min_value = (float[]) {0},);
 homekit_characteristic_t name = HOMEKIT_CHARACTERISTIC_(NAME, "Sonoff Switch");
-
 //AC Required Parameters
 homekit_characteristic_t active = HOMEKIT_CHARACTERISTIC_(ACTIVE, 0,.callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_active_change));
 homekit_characteristic_t current_temperature = HOMEKIT_CHARACTERISTIC_(CURRENT_TEMPERATURE, 0);
 homekit_characteristic_t current_heater_cooler_state = HOMEKIT_CHARACTERISTIC_(CURRENT_HEATER_COOLER_STATE, 0);
 homekit_characteristic_t target_heater_cooler_state = HOMEKIT_CHARACTERISTIC_(TARGET_HEATER_COOLER_STATE, 0, .callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_update));
-
 //optionals
 //homekit_characteristic_t units = HOMEKIT_CHARACTERISTIC_(TEMPERATURE_DISPLAY_UNITS, 0);
 homekit_characteristic_t cooling_threshold = HOMEKIT_CHARACTERISTIC_(COOLING_THRESHOLD_TEMPERATURE, 18,.callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_temp_update),.min_value = (float[]) {16},.max_value = (float[]) {30},.min_step = (float[]) {1} );
 homekit_characteristic_t heating_threshold = HOMEKIT_CHARACTERISTIC_(HEATING_THRESHOLD_TEMPERATURE, 22,.callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_temp_update),.min_value = (float[]) {16},.max_value = (float[]) {30},.min_step = (float[]) {1});
 //homekit_characteristic_t rotation_speed = HOMEKIT_CHARACTERISTIC_(ROTATION_SPEED, 0, .callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_update));
 
+//Device Information
+homekit_characteristic_t manufacturer     = HOMEKIT_CHARACTERISTIC_(MANUFACTURER,  DEVICE_MANUFACTURER);
+homekit_characteristic_t serial           = HOMEKIT_CHARACTERISTIC_(SERIAL_NUMBER, serial_value);
+homekit_characteristic_t model            = HOMEKIT_CHARACTERISTIC_(MODEL,         DEVICE_MODEL);
+homekit_characteristic_t revision         = HOMEKIT_CHARACTERISTIC_(FIRMWARE_REVISION,  FW_VERSION);
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+//AC related code
 void update_state() {
-	//No logic yet. Just trying to make it work. 
-	uint8_t state = target_heater_cooler_state.value.int_value;
-	//printf("Running update_state() \n" );
-	//printf("New Target Mode on %d\n", state );
-
-	current_heater_cooler_state.value = HOMEKIT_UINT8(state+1);
-	homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
+	uint8_t target_state = target_heater_cooler_state.value.int_value;
+	uint8_t active_status = active.value.int_value;
+	uint8_t current_state = current_heater_cooler_state.value.int_value;
+	printf("Running update_state() \n" );
+	printf("Active State: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
 	
-	uint8_t active_state = active.value.int_value;
-	if (active_state == 0) {
+	current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
+	homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
+	sysparam_set_int8("ac_mode",target_state);
+	current_ac_mode = target_state;
+	stored_active_state = active_status;
+	
+	if (active_status == 0) {
 	//	printf("OFF\n" );
 	//	ac_button_off();
 	}
 	else
 	{	
+		if ((target_state + 1 )!=current_state){
 		//printf("AC is now ON, updating temp\n" );
 		update_temp();
+		}
 	} 
-
 	               
 }
 void update_temp() {
-		//printf("Running update_temp() \n" );
-	
-	uint8_t state = active.value.int_value;
+	printf("Running update_temp() \n" );
 	uint8_t target_state = target_heater_cooler_state.value.int_value;
+	uint8_t active_status = active.value.int_value;
+	uint8_t current_state = current_heater_cooler_state.value.int_value;
+	printf("Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
+	printf("... \n");
+
 	float target_temp1 = 0;
+	target_state = (int)target_state;
  
 	if (target_state == 1) {
 	 //Read the Heat target
 		target_temp1= heating_threshold.value.float_value;
+		 current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
 	}
 	else
 	{
 	 //Else read the Cool target
 		target_temp1= cooling_threshold.value.float_value; 
+		current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
 	}
-  
-	//printf("Target State: %d\n",target_state );
-	//printf("Current State: %d\n",state );
-	//printf("Target temp: %f\n",target_temp1 );
-	
-	target_temp1 = (int)target_temp1;
+  	current_ac_temp = (int)target_temp1;
+	printf("Target temp: %f\n",target_temp1 );
 
- 
-	if(state == 1 && target_state == 2){
-	//Cool mode
+	sysparam_set_int8("ac_mode",target_state);
+	sysparam_set_int8("ac_temp",(int)target_temp1);
+ 	ac_command(target_state,target_temp1);
 
-		switch ((int)target_temp1)
-		{
-			
-			case 16:
-				//printf("New Cooling Temp: %d\n", 16 );
-				ac_button_cool_16();
-				break;
-			case 17:
-				//printf("New Cooling Temp: %d\n", 17 );
-				ac_button_cool_17();
-				break;
-			case 18:
-				//printf("New Cooling Temp: %d\n", 18 );
-				ac_button_cool_18();
-				break;
-			case 19:
-				//printf("New Cooling Temp: %d\n", 19 );
-				ac_button_cool_19();
-				break;
-			case 20:
-				//printf("New Cooling Temp: %d\n", 20 );
-				ac_button_cool_20();
-				break;
-			case 21:
-				//printf("New Cooling Temp: %d\n", 21 );
-				ac_button_cool_21();
-				break;
-			case 22:
-				//printf("New Cooling Temp: %d\n", 22 );
-				ac_button_cool_22();
-				break;
-			case 23:
-				//printf("New Cooling Temp: %d\n", 23 );
-				ac_button_cool_23();
-				break;
-			case 24:
-				//printf("New Cooling Temp: %d\n", 24 );
-				ac_button_cool_24();
-				break;
-			case 25:
-				//printf("New Cooling Temp: %d\n", 25 );
-				ac_button_cool_25();
-				break;
-			case 26:
-				//printf("New Cooling Temp: %d\n", 26 );
-				ac_button_cool_26();
-				break;
-			case 27:
-				//printf("New Cooling Temp: %d\n", 27 );
-				ac_button_cool_27();
-				break;
-			case 28:
-				//printf("New Cooling Temp: %d\n", 28 );
-				ac_button_cool_28();
-				break;
-			case 29:
-				//printf("New Cooling Temp: %d\n", 29 );
-				ac_button_cool_29();
-				break;
-			case 30:
-				//printf("New Cooling Temp: %d\n", 30 );
-				ac_button_cool_30();
-				break;	
-
-		default:
-				printf("No action \n" );
-		} 
-		
-	}
- 	if(state == 1 && target_state == 1){
-		//Heat mode
-		 switch ((int)target_temp1){
-			case 16:
-				//printf("New Heating Temp: %d\n", 16 );
-				ac_button_heat_16();
-				break;
-			case 17:
-				//printf("New Heating Temp: %d\n", 17 );
-				ac_button_heat_17();
-				break;
-			case 18:
-				//printf("New Heating Temp: %d\n", 18 );
-				ac_button_heat_18();
-				break;
-			case 19:
-				//printf("New Heating Temp: %d\n", 19 );
-				ac_button_heat_19();
-				break;
-			case 20:
-				//printf("New Heating Temp: %d\n", 20 );
-				ac_button_heat_20();
-				break;
-			case 21:
-				//printf("New Heating Temp: %d\n", 21 );
-				ac_button_heat_21();
-				break;
-			case 22:
-				//printf("New Heating Temp: %d\n", 22 );
-				ac_button_heat_22();
-				break;
-			case 23:
-				//printf("New Heating Temp: %d\n", 23 );
-				ac_button_heat_23();
-				break;
-			case 24:
-				//printf("New Heating Temp: %d\n", 24 );
-				ac_button_heat_24();
-				break;
-			case 25:
-				//printf("New Heating Temp: %d\n", 25 );
-				ac_button_heat_25();
-				break;
-			case 26:
-				//printf("New Heating Temp: %d\n", 26 );
-				ac_button_heat_26();
-				break;
-			case 27:
-				//printf("New Heating Temp: %d\n", 27 );
-				ac_button_heat_27();
-				break;
-			case 28:
-				//printf("New Heating Temp: %d\n", 28 );
-				ac_button_heat_28();
-				break;
-			case 29:
-				//printf("New Heating Temp: %d\n", 29 );
-				ac_button_heat_29();
-				break;
-			case 30:
-				//printf("New Heating Temp: %d\n", 30 );
-				ac_button_heat_30();
-				led_code(led_gpio, FUNCTION_C);
-				break;	
-
-		default:
-				printf("No action \n" );
-		}
-
-	} 
-	
-	if(state == 1 && target_state == 0){
-		//printf("Fan mode\n", 30 );
-		ac_button_aut();
-	}
 }
+
 void update_active() {
-	//printf("Running update_active() \n" );
-	uint8_t state = active.value.int_value;
-	//printf("New Active status on %d\n", state );
-	if (current_ac_state != state && state ==1)
+
+	printf("Running update_active() \n" );
+	uint8_t target_state = target_heater_cooler_state.value.int_value;
+	uint8_t active_status = active.value.int_value;
+	uint8_t current_state = current_heater_cooler_state.value.int_value;
+	printf("Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
+	printf("... \n");
+
+	//If its being requested to turn ON and saved status is different, then send IR command   
+	if (active_status ==1 && stored_active_state != active_status )
 	{
 	update_temp();	
 	}
 	
-	
-	if (state == 0) {
+
+	//If it is requested to turn off, and saved status is different then send IR off command.  
+	if (active_status == 0 && stored_active_state != active_status ) {
 	//	printf("OFF\n" );
 	ac_button_off();
 	led_code(led_gpio, FUNCTION_C);
 	}
-	else
-	{	
-		//printf("AC is now ON, updating temp\n" );
-		//update_temp();
-	} 
-	current_ac_state = state;
-	// printf("Changed active status\n");
-            
+	
+	stored_active_state = active_status;
+
+	//save ON/OFF status to sysparameters
+	sysparam_set_int8("ac_active",stored_active_state);
+	           
+}
+
+void int_ac_state(){
+//At reboot, set initial AC state from saved parameters  
+sysparam_status_t status;
+
+	printf("Initializing AC parameters\n");
+
+	status = sysparam_get_int8("ac_mode", &current_ac_mode);
+	if (status == SYSPARAM_OK){
+
+		int new_current_status = 1;
+		if (current_ac_mode == 1){
+			//Cool
+			new_current_status =2;
+			
+			status = sysparam_get_int8("ac_temp", &current_ac_temp);
+			if (status == SYSPARAM_OK){
+			heating_threshold.value = HOMEKIT_FLOAT((float)current_ac_temp);
+			}
+
+		}
+		if (current_ac_mode == 2)
+		{
+			//Heating
+			new_current_status =3;
+			status = sysparam_get_int8("ac_temp", &current_ac_temp);
+			if (status == SYSPARAM_OK){
+				printf("Temp:%d \n",current_ac_temp);
+			cooling_threshold.value = HOMEKIT_FLOAT((float)current_ac_temp);
+			}
+		}
+	
+		current_heater_cooler_state.value = HOMEKIT_UINT8(new_current_status);
+		target_heater_cooler_state.value = HOMEKIT_UINT8(current_ac_mode);
+	 }
+
+
+	status = sysparam_get_int8("ac_active", &stored_active_state);
+	 if (status == SYSPARAM_OK){
+	active.value = HOMEKIT_UINT8(stored_active_state);
+	 }
+	
 }
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -323,11 +371,20 @@ void call_things_process()
 {
 	int successes = 0, failures = 0;
     printf("HTTP get task starting...\r\n");
+	
 while(1) {
  
 if (Wifi_Connected == true)
 {
+	printf("Running HTTP get request...\r\n");
 
+			if (old_humidity_value == 0.0) 
+			{
+				printf("Waiting because sensor values are not ready...\r\n");
+				vTaskDelay(120000 / portTICK_PERIOD_MS);
+				continue;
+			}
+	
 			const struct addrinfo hints = {
 				.ai_family = AF_UNSPEC,
 				.ai_socktype = SOCK_STREAM,
@@ -344,6 +401,11 @@ if (Wifi_Connected == true)
 				
 				vTaskDelay(1000 / portTICK_PERIOD_MS);
 				failures++;
+				if (failures>NUMBER_OF_RETRIES)
+				{
+				printf("Temporarily killing http task");
+				taskHttp_delete();
+				}
 				continue;
 			}
 
@@ -373,8 +435,13 @@ if (Wifi_Connected == true)
 			if(s < 0) {
 				printf("... Failed to allocate socket.\r\n");
 				freeaddrinfo(res);
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
+				vTaskDelay(1000 / portTICK_PERIOD_MS);
 				failures++;
+				if (failures>NUMBER_OF_RETRIES)
+				{
+				printf("Temporarily killing http task");
+				taskHttp_delete();
+				}
 				continue;
 			}
 
@@ -386,6 +453,18 @@ if (Wifi_Connected == true)
 				printf("... socket connect failed.\r\n");
 				vTaskDelay(4000 / portTICK_PERIOD_MS);
 				failures++;
+				// if (failures>NUMBER_OF_RETRIES)
+				// {
+				// 	printf("Temporarily killing http task");
+				// 	vTaskDelete(callThingsProcess_handle);
+				// 	callThingsProcess_handle = NULL;
+				// }
+				if (failures>NUMBER_OF_RETRIES)
+				{
+				printf("Temporarily killing http task");
+				taskHttp_delete();
+				}
+				
 				continue;
 			}
 
@@ -411,16 +490,7 @@ if (Wifi_Connected == true)
 			
 			
 			printf("%s \n",req );
-			
-
-			
-			if (old_temperature_value ==0) 
-			{
-				vTaskDelay(4000 / portTICK_PERIOD_MS);
-				failures++;
-				continue;
-			}
-
+		
 			
 			// printf("%s \n",req );
 			
@@ -429,6 +499,11 @@ if (Wifi_Connected == true)
 				close(s);
 				vTaskDelay(4000 / portTICK_PERIOD_MS);
 				failures++;
+				if (failures>NUMBER_OF_RETRIES)
+				{
+				printf("Temporarily killing http task");
+				taskHttp_delete();
+				}
 				continue;
 			}
 			printf("... socket send success\r\n");
@@ -453,6 +528,10 @@ if (Wifi_Connected == true)
 			close(s);
 			printf("successes = %d failures = %d\r\n", successes, failures);
 			printf("\r\nEnding!\r\n");
+
+			successes=0;
+			failures =0;
+
 			vTaskDelay(THINGSPEAK_INTERVAL / portTICK_PERIOD_MS);
 	}
 	else
@@ -472,6 +551,7 @@ void identify_task(void *_args) {
 void identify(homekit_value_t _value) {
     printf("identify\n");
     xTaskCreate(identify_task, "identify", 128, NULL, 2, NULL);
+	sensor_worker();
 	vTaskDelay(100 / portTICK_PERIOD_MS);
 }
 
@@ -544,6 +624,7 @@ void sensor_worker() {
 		} else 
 		{
         printf("RC !!! ERROR Sensor\n");
+		
         //led_code(LED_GPIO, SENSOR_ERROR);
         
 		}
@@ -624,85 +705,67 @@ homekit_accessory_t *accessories[] = {
     HOMEKIT_ACCESSORY(.id=1, .category=homekit_accessory_category_thermostat, .services=(homekit_service_t*[]) {
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]) {
             &name,
-            HOMEKIT_CHARACTERISTIC(MANUFACTURER, "YP"),
-            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "0012345"),
-            HOMEKIT_CHARACTERISTIC(MODEL, "MultipleSensors"),
-            HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "0.1"),
+			&manufacturer,
+            &serial,
+            &model,
+            &revision,
             HOMEKIT_CHARACTERISTIC(IDENTIFY, temperature_sensor_identify),
             NULL
         }),
-        HOMEKIT_SERVICE(TEMPERATURE_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]) {
-            HOMEKIT_CHARACTERISTIC(NAME, "Temperature Sensor"),
-            &temperature,
-            NULL
-        }),
-        HOMEKIT_SERVICE(HUMIDITY_SENSOR, .characteristics=(homekit_characteristic_t*[]) {
-            HOMEKIT_CHARACTERISTIC(NAME, "Humidity Sensor"),
-            &humidity,
-            NULL
-        }),
-        NULL
-    }),
-HOMEKIT_ACCESSORY(.id=2, .category=homekit_accessory_category_switch, .services=(homekit_service_t*[]){
-        HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Motion Sensor"),
-            HOMEKIT_CHARACTERISTIC(MANUFACTURER, "YP"),
-            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "0012346"),
-            HOMEKIT_CHARACTERISTIC(MODEL, "MotionSensor"),
-            HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "0.1"),
-            HOMEKIT_CHARACTERISTIC(IDENTIFY, identify),
-            NULL
-        }),
-        HOMEKIT_SERVICE(MOTION_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Motion Sensor"),
-            &motion_detected,
-            NULL
-        }),
-        NULL
-    }),
-	HOMEKIT_ACCESSORY(.id=3, .category=homekit_accessory_category_sensor, .services=(homekit_service_t*[]){
-        HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Light Sensor"),
-            HOMEKIT_CHARACTERISTIC(MANUFACTURER, "YP"),
-            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "0012347"),
-            HOMEKIT_CHARACTERISTIC(MODEL, "LightSensor"),
-            HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "0.1"),
-			HOMEKIT_CHARACTERISTIC(IDENTIFY, light_sensor_identify),
-            NULL
-        }),
-        HOMEKIT_SERVICE(LIGHT_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Light Sensor"),
-            &currentAmbientLightLevel,
-            NULL
-        }),
-        NULL
-    }),
-	 HOMEKIT_ACCESSORY(.id=4, .category=homekit_accessory_category_air_conditioner , .services=(homekit_service_t*[]) {
-        HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]) {
-            HOMEKIT_CHARACTERISTIC(NAME, "AIR CONDITIONER"),
-            HOMEKIT_CHARACTERISTIC(MANUFACTURER, "HaPK"),
-            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "001"),
-            HOMEKIT_CHARACTERISTIC(MODEL, "MyThermostat"),
-            HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "0.1"),
-            HOMEKIT_CHARACTERISTIC(IDENTIFY, identify),
-            NULL
-        }),
-        HOMEKIT_SERVICE(HEATER_COOLER, .primary=true, .characteristics=(homekit_characteristic_t*[]) {
+            HOMEKIT_SERVICE(HEATER_COOLER, .primary=true, .characteristics=(homekit_characteristic_t*[]) {
             HOMEKIT_CHARACTERISTIC(NAME, "AirConditioner"),
             &active,
 			&current_temperature,
 			//&target_temperature,
             &current_heater_cooler_state,
             &target_heater_cooler_state,
-           &cooling_threshold,
+            &cooling_threshold,
             &heating_threshold,
-//            &units,
-//            &rotation_speed,
+			//          &units,
+//          &rotation_speed,
             NULL
         }),
         NULL
     }),
+ HOMEKIT_ACCESSORY( .category=homekit_accessory_category_switch, .services=(homekit_service_t*[]){
+        HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
+            &name,
+           	&manufacturer,
+            &serial,
+            &model,
+            &revision,
+            HOMEKIT_CHARACTERISTIC(IDENTIFY, temperature_sensor_identify),
+            NULL
+        }),
+        HOMEKIT_SERVICE(SWITCH, .primary=true, .characteristics=(homekit_characteristic_t*[]){
+            HOMEKIT_CHARACTERISTIC(NAME, "Sonoff Switch"),
+            &switch_on,
+            NULL
+        }),
+        		HOMEKIT_SERVICE(TEMPERATURE_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]) {
+            HOMEKIT_CHARACTERISTIC(NAME, "Temperature Sensor"),
+			&temperature,
+            NULL
+        }),
+		 HOMEKIT_SERVICE(LIGHT_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]){
+            HOMEKIT_CHARACTERISTIC(NAME, "Light Sensor"),
+            &currentAmbientLightLevel,
+            NULL
+        }),
+		        HOMEKIT_SERVICE(MOTION_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]){
+            HOMEKIT_CHARACTERISTIC(NAME, "Motion Sensor"),
+            &motion_detected,
+            NULL
+        }), 
+        HOMEKIT_SERVICE(HUMIDITY_SENSOR, .characteristics=(homekit_characteristic_t*[]) {
+            HOMEKIT_CHARACTERISTIC(NAME, "Humidity Sensor"),
+			&humidity,
+            NULL
+        }),
     NULL
+ }),
+ NULL
+    
 };
 
 
@@ -710,25 +773,43 @@ void on_event(homekit_event_t event) {
     if (event == HOMEKIT_EVENT_SERVER_INITIALIZED) {
         //led_status_set(led_status, paired ? &normal_mode : &unpaired);
 		 printf("SERVER JUST INITIALIZED\n");
-		 
+		
 		 if (homekit_is_paired()){
-			printf("Found pairing, starting timers\n");
-			sdk_os_timer_arm(&extra_func_timer, 10000, 1);
+			
 
-			if (USE_THINGSPEAK == 1){
-			//Start the ThingsSpeak process only if relevant flag is set
-				xTaskCreate(call_things_process, "http", 1024, NULL, 1, NULL);
+
+			if (USE_THINGSPEAK == 1 && Http_TaskStarted==false){
+				//Start the ThingsSpeak process
+				printf("http task started\n");
+				xTaskCreate(call_things_process, "http", 1024, NULL, 1, &callThingsProcess_handle);
+				Http_TaskStarted=true;
 			}
-	
 
+			if (extra_function_TaskStarted ==false)
+			{
+				UDPLOG_PRINTF_TO_UDP;
+    			udplog_init(3);
+				printf("Sterted UDP logging\n");
+
+				printf("Found pairing, starting timers\n");
+				sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
+				//sdk_os_timer_disarm(&extra_func_timer);
+				sdk_os_timer_arm(&extra_func_timer, 10000, 1);
+				extra_function_TaskStarted=true;
+			
 			adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
 			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
 			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
-			
-			
+						
 			adv_button_create(button_gpio, true);
 			adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
-			adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);		
+			adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);
+			}
+
+			if (param_started == false){
+			int_ac_state();
+			param_started=true;
+		}	
 		 }
 		 
     }
@@ -744,60 +825,148 @@ void on_event(homekit_event_t event) {
             //led_status_set(led_status, &unpaired);
 		printf("CLIENT JUST DISCONNECTED\n");
     }
+	else if (event == HOMEKIT_EVENT_CLIENT_VERIFIED) {
+		printf("CLIENT JUST VERIFIED\n");
+		 if (homekit_is_paired()){
+			
+
+if (callThingsProcess_handle != NULL)
+	printf("The CALL PROCESS IS NOT NULL\n");
+
+
+			if (USE_THINGSPEAK == 1 && Http_TaskStarted == false){
+				//Start the ThingsSpeak process
+				printf("http task started\n");
+				xTaskCreate(call_things_process, "http", 1024, NULL, 1, &callThingsProcess_handle);
+				Http_TaskStarted = true;
+			}
+
+			if (extra_function_TaskStarted ==false)
+			{
+				UDPLOG_PRINTF_TO_UDP;
+    			udplog_init(3);
+				printf("Sterted UDP logging\n");
+
+				printf("Found pairing, starting timers\n");
+				sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
+				//sdk_os_timer_disarm(&extra_func_timer);
+				sdk_os_timer_arm(&extra_func_timer, 10000, 1);
+				extra_function_TaskStarted=true;
+			
+			adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
+			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
+			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
+			
+			adv_button_create(button_gpio, true);
+			adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
+			adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);	
+			}	
+
+		if (param_started == false){
+			int_ac_state();
+			param_started=true;
+		}
+
+		 }
+
+
+
+	}
     else if (event == HOMEKIT_EVENT_PAIRING_ADDED || event == HOMEKIT_EVENT_PAIRING_REMOVED) {
 		paired = homekit_is_paired();
 		// led_status_set(led_status, paired ? &normal_mode : &unpaired);
 		printf("CLIENT JUST PAIRED\n");
-		
+
+		if (!paired){
+			printf("CLIENT LOST PAIRE - REBOOT\n");
+			sdk_system_restart();
+		}
+			// if (USE_THINGSPEAK == 1){
+			// 	if (TaskStarted == false){
+			// 	//Start the ThingsSpeak process only if relevant flag is set
+			// 	printf("http task started\n");
+			// 	xTaskCreate(call_things_process, "http", 1024, NULL, 1, NULL);
+			// 	TaskStarted=true;
+			// 	}
+			// }
 	
-		sdk_os_timer_arm(&extra_func_timer, 10000, 1);
+		// sdk_os_timer_arm(&extra_func_timer, 10000, 1);
 			
-		adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
-		adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
-		adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
+		// adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
+		// adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
+		// adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
 		
 		
-		adv_button_create(button_gpio, true);
-		adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
-		adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);
+		// adv_button_create(button_gpio, true);
+		// adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
+		// adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);
     }
 }
 
-
+void taskHttp_delete()
+{
+TaskHandle_t xTask = callThingsProcess_handle;
+Http_TaskStarted = false;
+//vTaskSuspendAll();
+if( callThingsProcess_handle != NULL )
+{
+    /* The task is going to be deleted.
+    Set the handle to NULL. */
+    callThingsProcess_handle = NULL;
+    /* Delete using the copy of the handle. */
+    vTaskDelete( xTask );
+}
+//xTaskResumeAll();
+}
 
 
 void create_accessory_name() {
     uint8_t macaddr[6];
     sdk_wifi_get_macaddr(STATION_IF, macaddr);
     
-    int name_len = snprintf(NULL, 0, "Homekit Sensor-%02X%02X%02X",
+    int name_len = snprintf(NULL, 0, "HomekitSensor-%02X%02X%02X",
                             macaddr[3], macaddr[4], macaddr[5]);
     char *name_value = malloc(name_len+1);
-    snprintf(name_value, name_len+1, "Homekit Sensor-%02X%02X%02X",
+    snprintf(name_value, name_len+1, "HomekitSensor-%02X%02X%02X",
              macaddr[3], macaddr[4], macaddr[5]);
     
     name.value = HOMEKIT_STRING(name_value);
+
+
+snprintf(serial_value, 13, "%02X%02X%02X%02X%02X%02X", macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
+
 }
 
 homekit_server_config_t config = {
     .accessories = accessories,
-    .password = "111-11-111",
+    .password = "222-22-222",
 	.on_event = on_event,
 };
 
 
 void on_wifi_event(wifi_config_event_t event) {
+
+
     if (event == WIFI_CONFIG_CONNECTED) {
         printf("CONNECTED TO >>> WIFI <<<\n");
 	
 	Wifi_Connected=true;
 
 	create_accessory_name();
+	char *custom_hostname = name.value.string_value;
+	struct netif *netif = sdk_system_get_netif(STATION_IF);
+    if (netif) {
+		 printf("HOSTNAME set>>>>>:%s\n", custom_hostname);
+        LOCK_TCPIP_CORE();
+        dhcp_release_and_stop(netif);
+        netif->hostname = "foobar";
+		netif->hostname =custom_hostname;
+        dhcp_start(netif);
+        UNLOCK_TCPIP_CORE();
+    }
+
     homekit_server_init(&config);
 	
-	sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
-	sdk_os_timer_disarm(&extra_func_timer);
-
 
     } else if (event == WIFI_CONFIG_DISCONNECTED) {
 		Wifi_Connected = false;
@@ -812,6 +981,7 @@ void hardware_init() {
     led_write(true);
 
 	gpio_set_pullup(SENSOR_PIN, false, false);
+	gpio_set_pullup(IR_PIN, false, false);
 
 	// IR Common initialization (can be done only once)
 	ir_tx_init();
