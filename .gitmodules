@@ -16,3 +16,6 @@
 [submodule "components/UDPlogger"]
 	path = components/UDPlogger
 	url = https://github.com/HomeACcessoryKid/UDPlogger
+[submodule "components/common/homekit"]
+	path = components/common/homekit
+	url = https://github.com/maximkulkin/esp-homekit
