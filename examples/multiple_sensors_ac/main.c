@@ -82,6 +82,7 @@ const int SENSOR_PIN = 5; //DHT sensor on pin D1
 const int IR_PIN = 14 ; // Wemos D1 mini pin: D5. (Just for Reference)
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+#define FREEHEAP()                          printf("Free Heap: %d\n", xPortGetFreeHeapSize())
 
 volatile float old_humidity_value = 0.0, old_temperature_value = 0.0 , old_light_value =0.0, old_move_value = 0.0;
 //AC related variables
@@ -182,8 +183,7 @@ void task_stats_task ( void *args)
             printf ("%s, vPortFree\n", __func__);
         }
 
-		uint32_t freeheap = xPortGetFreeHeapSize();
-		printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
+		FREEHEAP();  
 
         vTaskDelay((30000) / portTICK_PERIOD_MS);
     }
@@ -386,11 +386,9 @@ void call_things_process()
 	int successes = 0, failures = 0;
     printf("HTTP get task starting...\r\n");
 	
-while(1) {
-
-	uint32_t freeheap = xPortGetFreeHeapSize();
-	printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
-	if (freeheap<8000){
+	while(1) {
+	FREEHEAP();
+	if (xPortGetFreeHeapSize()<8000){
 	printf("Low free heap\n");
 	printf("Temporarily killing http task\n\n");
 	taskHttp_delete();
@@ -806,9 +804,8 @@ void on_event(homekit_event_t event) {
 
 			if (USE_THINGSPEAK == 1 && Http_TaskStarted==false){
 				//Start the ThingsSpeak process
-				uint32_t freeheap = xPortGetFreeHeapSize();
-				printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
-				if (freeheap>8000){
+				FREEHEAP();
+				if (xPortGetFreeHeapSize()>8000){
 				printf("http task started\n");
 				xTaskCreate(call_things_process, "http", 1024, NULL, 1, &callThingsProcess_handle);
 				Http_TaskStarted=true;
@@ -864,9 +861,8 @@ void on_event(homekit_event_t event) {
 
 				if (USE_THINGSPEAK == 1 && Http_TaskStarted == false){
 					//Start the ThingsSpeak process
-					uint32_t freeheap = xPortGetFreeHeapSize();
-					printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
-					if (freeheap>8000){
+					FREEHEAP();
+					if (xPortGetFreeHeapSize()>8000){
 					printf("http task started\n");
 					xTaskCreate(call_things_process, "http", 1024, NULL, 1, &callThingsProcess_handle);
 					Http_TaskStarted=true;
@@ -1006,6 +1002,7 @@ void on_wifi_event(wifi_config_event_t event) {
 
 
     homekit_server_init(&config);
+	FREEHEAP();
 	
 
     } else if (event == WIFI_CONFIG_DISCONNECTED) {

@@ -309,14 +309,14 @@ static const  int16_t Off[] = {9016 ,-4464 ,  678 ,-1629 ,  680 , -527 ,  679 , 
 
  void ac_button_off(){
 
-	ir_tx_init();
+	//ir_tx_init();
 	ir_raw_send(Off, sizeof(Off) / sizeof(*Off));
 
 }
 
  void ac_button_aut(){
 
-	ir_tx_init();
+	//ir_tx_init();
 	ir_raw_send(Fan, sizeof(Fan) / sizeof(*Fan));
 
 }
@@ -497,7 +497,7 @@ if(target_state == 2)
 		length1 = sizeof(Off)/sizeof(*Off);
 	}
 
-	ir_tx_init();
+	//ir_tx_init();
 	ir_raw_send(RawData, length1);
 
 
