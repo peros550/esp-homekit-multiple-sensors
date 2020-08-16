@@ -1,7 +1,7 @@
 //#include <stdio.h>
 //#include <string.h>
 #include <esp/uart.h>
-//#include <rboot-api.h>
+#include <rboot-api.h>
 #include <sysparam.h>
 #include <esplibs/libmain.h>
 
@@ -46,12 +46,13 @@
 #define DEVICE_NAME "MultiSensor"
 #define DEVICE_MODEL "esp8266"
 char serial_value[13];  //Device Serial is set upon boot based on MAC address
-#define FW_VERSION "1.0"
+#define FW_VERSION "0.0.0"
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 #define	USE_THINGSPEAK 0 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
 #define WEB_SERVER "api.thingspeak.com"
 #define API_KEY  "xxx" //Aigaleo Private API key. This is personal and can been  obtained by ThingsSpeak.com
+
 #define FIELD1 "field1=" //temp
 #define FIELD2 "field2=" //hum
 #define WEB_PORT "80"
@@ -65,8 +66,15 @@ TaskHandle_t callThingsProcess_handle = NULL;
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+// add this section to make your device OTA capable
+// create the extra characteristic &ota_trigger, at the end of the primary service (before the NULL)
+// it can be used in Eve, which will show it, where Home does not
+// and apply the four other parameters in the accessories_information section
 
+#include "ota-api.h"
+homekit_characteristic_t ota_trigger  = API_OTA_TRIGGER;
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 const int led_gpio = 2; // Pin D4
 const int button_gpio = 4; //Pin (D2) 
 const int motion_sensor_gpio = 16; // Wemos D1 mini pin: D0 
@@ -167,10 +175,16 @@ void task_stats_task ( void *args)
             }
             /*        }*/
             
+
+
             /* The array is no longer needed, free the memory it consumes. */
             vPortFree( pxTaskStatusArray );
             printf ("%s, vPortFree\n", __func__);
         }
+
+		uint32_t freeheap = xPortGetFreeHeapSize();
+		printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
+
         vTaskDelay((30000) / portTICK_PERIOD_MS);
     }
     
@@ -373,16 +387,27 @@ void call_things_process()
     printf("HTTP get task starting...\r\n");
 	
 while(1) {
- 
+
+	uint32_t freeheap = xPortGetFreeHeapSize();
+	printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
+	if (freeheap<8000){
+	printf("Low free heap\n");
+	printf("Temporarily killing http task\n\n");
+	taskHttp_delete();
+	}
+
+
 if (Wifi_Connected == true)
 {
 	printf("Running HTTP get request...\r\n");
 
 			if (old_humidity_value == 0.0) 
 			{
-				printf("Waiting because sensor values are not ready...\r\n");
-				vTaskDelay(120000 / portTICK_PERIOD_MS);
-				continue;
+				printf("Temporarily killing http task, sensor values are not ready \r\n");
+				taskHttp_delete();
+								
+				//vTaskDelay(120000 / portTICK_PERIOD_MS);
+				//continue;
 			}
 	
 			const struct addrinfo hints = {
@@ -403,7 +428,7 @@ if (Wifi_Connected == true)
 				failures++;
 				if (failures>NUMBER_OF_RETRIES)
 				{
-				printf("Temporarily killing http task");
+				printf("Too many http failures. Temporarily killing http task\r\n");
 				taskHttp_delete();
 				}
 				continue;
@@ -439,7 +464,7 @@ if (Wifi_Connected == true)
 				failures++;
 				if (failures>NUMBER_OF_RETRIES)
 				{
-				printf("Temporarily killing http task");
+				printf("Too many http failures. Temporarily killing http task\r\n");
 				taskHttp_delete();
 				}
 				continue;
@@ -461,7 +486,7 @@ if (Wifi_Connected == true)
 				// }
 				if (failures>NUMBER_OF_RETRIES)
 				{
-				printf("Temporarily killing http task");
+				printf("Too many http failures. Temporarily killing http task\r\n");
 				taskHttp_delete();
 				}
 				
@@ -501,7 +526,7 @@ if (Wifi_Connected == true)
 				failures++;
 				if (failures>NUMBER_OF_RETRIES)
 				{
-				printf("Temporarily killing http task");
+				printf("Temporarily killing http task\n");
 				taskHttp_delete();
 				}
 				continue;
@@ -640,7 +665,7 @@ void sensor_worker() {
 		 homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT((1024 - light_value))); 
 		}
 		
-		uint32_t freeheap = xPortGetFreeHeapSize();
+	//	uint32_t freeheap = xPortGetFreeHeapSize();
     //printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
 	 
 
@@ -723,6 +748,7 @@ homekit_accessory_t *accessories[] = {
             &heating_threshold,
 			//          &units,
 //          &rotation_speed,
+			&ota_trigger,
             NULL
         }),
         NULL
@@ -780,16 +806,22 @@ void on_event(homekit_event_t event) {
 
 			if (USE_THINGSPEAK == 1 && Http_TaskStarted==false){
 				//Start the ThingsSpeak process
+				uint32_t freeheap = xPortGetFreeHeapSize();
+				printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
+				if (freeheap>8000){
 				printf("http task started\n");
 				xTaskCreate(call_things_process, "http", 1024, NULL, 1, &callThingsProcess_handle);
 				Http_TaskStarted=true;
+				}
 			}
 
 			if (extra_function_TaskStarted ==false)
 			{
 				UDPLOG_PRINTF_TO_UDP;
-    			udplog_init(3);
-				printf("Sterted UDP logging\n");
+				//UDPLOG_PRINTF_ALSO_SERIAL;
+    			//udplog_init(3);
+				udplog_init(tskIDLE_PRIORITY+1);
+				printf("Started UDP logging1\n");
 
 				printf("Found pairing, starting timers\n");
 				sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
@@ -797,13 +829,11 @@ void on_event(homekit_event_t event) {
 				sdk_os_timer_arm(&extra_func_timer, 10000, 1);
 				extra_function_TaskStarted=true;
 			
-			adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
-			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
-			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
+				adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
+				adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
+				adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
 						
-			adv_button_create(button_gpio, true);
-			adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
-			adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);
+
 			}
 
 			if (param_started == false){
@@ -816,56 +846,57 @@ void on_event(homekit_event_t event) {
     else if (event == HOMEKIT_EVENT_CLIENT_CONNECTED) {
         if (!paired)
            // led_status_set(led_status, &pairing);
-	   printf("CLIENT JUST CONNECTED\n");
+	   		printf("CLIENT JUST CONNECTED\n");
 	   
 	   
     }
     else if (event == HOMEKIT_EVENT_CLIENT_DISCONNECTED) {
         if (!paired)
             //led_status_set(led_status, &unpaired);
-		printf("CLIENT JUST DISCONNECTED\n");
+			printf("CLIENT JUST DISCONNECTED\n");
     }
 	else if (event == HOMEKIT_EVENT_CLIENT_VERIFIED) {
 		printf("CLIENT JUST VERIFIED\n");
-		 if (homekit_is_paired()){
-			
+		if (homekit_is_paired())
+		{
+			if (callThingsProcess_handle != NULL)
+				//printf("The CALL PROCESS IS NOT NULL\n");
 
-if (callThingsProcess_handle != NULL)
-	printf("The CALL PROCESS IS NOT NULL\n");
+				if (USE_THINGSPEAK == 1 && Http_TaskStarted == false){
+					//Start the ThingsSpeak process
+					uint32_t freeheap = xPortGetFreeHeapSize();
+					printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
+					if (freeheap>8000){
+					printf("http task started\n");
+					xTaskCreate(call_things_process, "http", 1024, NULL, 1, &callThingsProcess_handle);
+					Http_TaskStarted=true;
+					}
+				}
 
+				if (extra_function_TaskStarted ==false)
+				{
+					UDPLOG_PRINTF_TO_UDP;
+					//UDPLOG_PRINTF_ALSO_SERIAL;
+					//udplog_init(3);
+					udplog_init(tskIDLE_PRIORITY+1);
+					printf("Started UDP logging2\n");
 
-			if (USE_THINGSPEAK == 1 && Http_TaskStarted == false){
-				//Start the ThingsSpeak process
-				printf("http task started\n");
-				xTaskCreate(call_things_process, "http", 1024, NULL, 1, &callThingsProcess_handle);
-				Http_TaskStarted = true;
-			}
+					printf("Found pairing, starting timers\n");
+					sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
+					//sdk_os_timer_disarm(&extra_func_timer);
+					sdk_os_timer_arm(&extra_func_timer, 10000, 1);
+					extra_function_TaskStarted=true;
+					
+					adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
+					adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
+					adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
+					
+				}	
 
-			if (extra_function_TaskStarted ==false)
-			{
-				UDPLOG_PRINTF_TO_UDP;
-    			udplog_init(3);
-				printf("Sterted UDP logging\n");
-
-				printf("Found pairing, starting timers\n");
-				sdk_os_timer_setfn(&extra_func_timer, sensor_worker, NULL);
-				//sdk_os_timer_disarm(&extra_func_timer);
-				sdk_os_timer_arm(&extra_func_timer, 10000, 1);
-				extra_function_TaskStarted=true;
-			
-			adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
-			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
-			adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
-			
-			adv_button_create(button_gpio, true);
-			adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
-			adv_button_register_callback_fn(button_gpio, button_hold_callback, 5);	
-			}	
-
-		if (param_started == false){
-			int_ac_state();
-			param_started=true;
-		}
+				if (param_started == false){
+					int_ac_state();
+					param_started=true;
+				}
 
 		 }
 
@@ -878,7 +909,8 @@ if (callThingsProcess_handle != NULL)
 		printf("CLIENT JUST PAIRED\n");
 
 		if (!paired){
-			printf("CLIENT LOST PAIRE - REBOOT\n");
+			printf("CLIENT LOST PAIRING - REBOOT\n");
+			vTaskDelay(1000 / portTICK_PERIOD_MS);
 			sdk_system_restart();
 		}
 			// if (USE_THINGSPEAK == 1){
@@ -933,12 +965,12 @@ void create_accessory_name() {
     name.value = HOMEKIT_STRING(name_value);
 
 
-snprintf(serial_value, 13, "%02X%02X%02X%02X%02X%02X", macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
+	snprintf(serial_value, 13, "%02X%02X%02X%02X%02X%02X", macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
 
 }
 
 homekit_server_config_t config = {
-    .accessories = accessories,
+	.accessories = accessories,
     .password = "222-22-222",
 	.on_event = on_event,
 };
@@ -965,6 +997,14 @@ void on_wifi_event(wifi_config_event_t event) {
         UNLOCK_TCPIP_CORE();
     }
 
+//OTA
+    int c_hash=ota_read_sysparam(&manufacturer.value.string_value,&serial.value.string_value,
+                                      &model.value.string_value,&revision.value.string_value);
+    //c_hash=1; revision.value.string_value="0.0.1"; //cheat line
+    config.accessories[0]->config_number=c_hash;
+    
+
+
     homekit_server_init(&config);
 	
 
@@ -985,6 +1025,10 @@ void hardware_init() {
 
 	// IR Common initialization (can be done only once)
 	ir_tx_init();
+
+	adv_button_create(button_gpio, true);
+	adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
+	adv_button_register_callback_fn(button_gpio, button_hold_callback, 2);	
 }
 
 

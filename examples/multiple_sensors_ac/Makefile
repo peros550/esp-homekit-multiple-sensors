@@ -1,4 +1,4 @@
-PROGRAM = multiple_sensors_ac
+PROGRAM = main
 
 EXTRA_COMPONENTS = \
     extras/onewire \
@@ -6,6 +6,7 @@ EXTRA_COMPONENTS = \
 	extras/dht \
 	extras/http-parser \
 	extras/dhcpserver \
+	extras/rboot-ota \
 	$(abspath ../../lib/adv_button) \
 	$(abspath ../../lib/led_codes)\
 	$(abspath ../../components/esp-8266/wifi_config) \
@@ -30,8 +31,8 @@ HOMEKIT_SMALL = 0
 EXTRA_CFLAGS += -I../.. -DHOMEKIT_SHORT_APPLE_UUIDS
 #EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_VERIFY
 #EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_SETUP
-#EXTRA_CFLAGS += -DUDPLOG_PRINTF_TO_UDP
-#EXTRA_CFLAGS += -DUDPLOG_PRINTF_ALSO_SERIAL
+EXTRA_CFLAGS += -DUDPLOG_PRINTF_TO_UDP
+EXTRA_CFLAGS += -DUDPLOG_PRINTF_ALSO_SERIAL
 EXTRA_CFLAGS += -DLWIP_NETIF_HOSTNAME=1
 EXTRA_CFLAGS += -DconfigUSE_TRACE_FACILITY
 
@@ -40,6 +41,10 @@ EXTRA_CFLAGS += -DconfigUSE_TRACE_FACILITY
 
 
 include $(SDK_PATH)/common.mk
+
+signature:
+	$(shell openssl sha384 -binary -out firmware/main.bin.sig firmware/main.bin)
+	$(shell printf "%08x" `cat firmware/main.bin | wc -c`| xxd -r -p >>firmware/main.bin.sig)
 
 monitor:
 	$(FILTEROUTPUT) --port $(ESPPORT) --baud 115200 --elf $(PROGRAM_OUT)
