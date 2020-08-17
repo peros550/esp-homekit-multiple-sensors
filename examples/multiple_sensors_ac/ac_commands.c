@@ -310,6 +310,7 @@ static const  int16_t Off[] = {9016 ,-4464 ,  678 ,-1629 ,  680 , -527 ,  679 , 
  void ac_button_off(){
 
 	//ir_tx_init();
+	printf("...Sending OFF command...\n");
 	ir_raw_send(Off, sizeof(Off) / sizeof(*Off));
 
 }
@@ -317,6 +318,7 @@ static const  int16_t Off[] = {9016 ,-4464 ,  678 ,-1629 ,  680 , -527 ,  679 , 
  void ac_button_aut(){
 
 	//ir_tx_init();
+	printf("Sending Fan command\n");
 	ir_raw_send(Fan, sizeof(Fan) / sizeof(*Fan));
 
 }

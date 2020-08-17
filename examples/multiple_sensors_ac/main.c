@@ -267,7 +267,11 @@ void update_state() {
 	}
 	else
 	{	
-		if ((target_state + 1 )!=current_state){
+		if(target_state == 0){
+		ac_button_aut();
+		led_code(led_gpio, FUNCTION_C);
+		}
+		else if ((target_state + 1 )!=current_state){
 		//printf("AC is now ON, updating temp\n" );
 		update_temp();
 		}
@@ -280,15 +284,26 @@ void update_temp() {
 	uint8_t active_status = active.value.int_value;
 	uint8_t current_state = current_heater_cooler_state.value.int_value;
 	printf("Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
-	printf("... \n");
+
 
 	float target_temp1 = 0;
 	target_state = (int)target_state;
  
-	if (target_state == 1) {
+	if (target_state == 0)
+	{
+		if (active_status ==1)
+		{
+			printf("This should normally sent AUTO command\n" );
+			//Auto mode
+			current_heater_cooler_state.value = HOMEKIT_UINT8(target_state);
+		}
+
+		/* code */
+	}
+	else if (target_state == 1) {
 	 //Read the Heat target
 		target_temp1= heating_threshold.value.float_value;
-		 current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
+		current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
 	}
 	else
 	{
@@ -302,6 +317,7 @@ void update_temp() {
 	sysparam_set_int8("ac_mode",target_state);
 	sysparam_set_int8("ac_temp",(int)target_temp1);
  	ac_command(target_state,target_temp1);
+	led_code(led_gpio, FUNCTION_C);
 
 }
 
@@ -312,13 +328,24 @@ void update_active() {
 	uint8_t active_status = active.value.int_value;
 	uint8_t current_state = current_heater_cooler_state.value.int_value;
 	printf("Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
-	printf("... \n");
-
+	
 	//If its being requested to turn ON and saved status is different, then send IR command   
+	
 	if (active_status ==1 && stored_active_state != active_status )
 	{
-	update_temp();	
+		if (target_state == 0)
+		{
+			ac_button_aut();
+			led_code(led_gpio, FUNCTION_C);
+		}
+		else
+		{
+			update_temp();
+		}
 	}
+	
+		
+	
 	
 
 	//If it is requested to turn off, and saved status is different then send IR off command.  
