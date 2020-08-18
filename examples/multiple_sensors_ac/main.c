@@ -106,6 +106,7 @@ void on_temp_update(homekit_characteristic_t *ch, homekit_value_t value, void *c
     update_temp();
 }
 
+
 void on_active_change(homekit_characteristic_t *ch, homekit_value_t value, void *context) {
     update_active();
 }
@@ -196,15 +197,13 @@ homekit_characteristic_t switch_on = HOMEKIT_CHARACTERISTIC_(
 );
 
 
-
 void switch_on_callback(homekit_characteristic_t *_ch, homekit_value_t on, void *context) {
-
-   
     printf("Task Stats\n");
-    if (switch_on.value.bool_value)
+	FREEHEAP();
+	    if (switch_on.value.bool_value)
         {
             if (task_stats_task_handle == NULL){
-                xTaskCreate(task_stats_task, "task_stats_task", 512 , NULL, tskIDLE_PRIORITY+1, &task_stats_task_handle);
+                xTaskCreate(task_stats_task, "task_stats_task", 256 , NULL, tskIDLE_PRIORITY+1, &task_stats_task_handle);
             } else {
                 printf ("%s task_Status_set TRUE, but task pointer not NULL\n", __func__);
             }
@@ -217,7 +216,7 @@ void switch_on_callback(homekit_characteristic_t *_ch, homekit_value_t on, void 
         } else {
             printf ("%s task_Status_set FALSE, but task pointer is NULL\n", __func__);
         }
-
+	FREEHEAP();
         
     }
     
@@ -252,8 +251,8 @@ void update_state() {
 	uint8_t target_state = target_heater_cooler_state.value.int_value;
 	uint8_t active_status = active.value.int_value;
 	uint8_t current_state = current_heater_cooler_state.value.int_value;
-	printf("Running update_state() \n" );
-	printf("Active State: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
+	//printf("Running update_state() \n" );
+	printf("UPDATE STATE: Active State: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
 	
 	current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
 	homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
@@ -279,11 +278,11 @@ void update_state() {
 	               
 }
 void update_temp() {
-	printf("Running update_temp() \n" );
+	//printf("Running update_temp() \n" );
 	uint8_t target_state = target_heater_cooler_state.value.int_value;
 	uint8_t active_status = active.value.int_value;
 	uint8_t current_state = current_heater_cooler_state.value.int_value;
-	printf("Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
+	printf("UPDATE TEMP: Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
 
 
 	float target_temp1 = 0;
@@ -296,6 +295,7 @@ void update_temp() {
 			printf("This should normally sent AUTO command\n" );
 			//Auto mode
 			current_heater_cooler_state.value = HOMEKIT_UINT8(target_state);
+			homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
 		}
 
 		/* code */
@@ -304,15 +304,17 @@ void update_temp() {
 	 //Read the Heat target
 		target_temp1= heating_threshold.value.float_value;
 		current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
+		homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
 	}
 	else
 	{
 	 //Else read the Cool target
 		target_temp1= cooling_threshold.value.float_value; 
 		current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
+		homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
 	}
   	current_ac_temp = (int)target_temp1;
-	printf("Target temp: %f\n",target_temp1 );
+	printf("Target temp: %.1f\n",target_temp1 );
 
 	sysparam_set_int8("ac_mode",target_state);
 	sysparam_set_int8("ac_temp",(int)target_temp1);
@@ -323,15 +325,15 @@ void update_temp() {
 
 void update_active() {
 
-	printf("Running update_active() \n" );
+	//printf("\nRunning update_active() \n" );
 	uint8_t target_state = target_heater_cooler_state.value.int_value;
 	uint8_t active_status = active.value.int_value;
 	uint8_t current_state = current_heater_cooler_state.value.int_value;
-	printf("Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
+	printf("\nUPDATE ACTIVE: Active Status: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
 	
 	//If its being requested to turn ON and saved status is different, then send IR command   
 	
-	if (active_status ==1 && stored_active_state != active_status )
+	if (active_status == 1  )
 	{
 		if (target_state == 0)
 		{
@@ -344,22 +346,20 @@ void update_active() {
 		}
 	}
 	
-		
-	
-	
-
-	//If it is requested to turn off, and saved status is different then send IR off command.  
-	if (active_status == 0 && stored_active_state != active_status ) {
+	//If it is requested to turn off  
+	if (active_status == 0  ) {
 	//	printf("OFF\n" );
 	ac_button_off();
 	led_code(led_gpio, FUNCTION_C);
 	}
+
 	
 	stored_active_state = active_status;
 
 	//save ON/OFF status to sysparameters
 	sysparam_set_int8("ac_active",stored_active_state);
-	           
+
+             
 }
 
 void int_ac_state(){
@@ -1023,8 +1023,10 @@ void on_wifi_event(wifi_config_event_t event) {
 //OTA
     int c_hash=ota_read_sysparam(&manufacturer.value.string_value,&serial.value.string_value,
                                       &model.value.string_value,&revision.value.string_value);
-    //c_hash=1; revision.value.string_value="0.0.1"; //cheat line
-    config.accessories[0]->config_number=c_hash;
+    
+
+	//c_hash=1; revision.value.string_value="0.0.1"; //cheat line
+	config.accessories[0]->config_number=c_hash;
     
 
 
