@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include <string.h>
 
+#include <espressif/esp_common.h>
+
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -46,7 +48,7 @@
 #define DEVICE_NAME "MultiSensor"
 #define DEVICE_MODEL "esp8266"
 char serial_value[13];  //Device Serial is set upon boot based on MAC address
-#define FW_VERSION "0.0.0"
+#define FW_VERSION "0.0.1"
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 #define	USE_THINGSPEAK 0 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
@@ -254,8 +256,9 @@ void update_state() {
 	//printf("Running update_state() \n" );
 	printf("UPDATE STATE: Active State: %d, Current State: %d, Target State: %d \n",active_status, current_state, target_state );
 	
-	current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
-	homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
+	
+	//current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
+	//homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
 	sysparam_set_int8("ac_mode",target_state);
 	current_ac_mode = target_state;
 	stored_active_state = active_status;
@@ -278,6 +281,17 @@ void update_state() {
 	               
 }
 void update_temp() {
+	//TARGET: 
+	//0 = AUTOMATIC
+	//1 = HEAT
+	//2 = COOL
+
+	//CURRENT STATE:
+	//0 = inactive
+	//1 = idle
+	//2 = heating
+	//3 = cooling
+
 	//printf("Running update_temp() \n" );
 	uint8_t target_state = target_heater_cooler_state.value.int_value;
 	uint8_t active_status = active.value.int_value;
@@ -288,7 +302,7 @@ void update_temp() {
 	float target_temp1 = 0;
 	target_state = (int)target_state;
  
-	if (target_state == 0)
+	if (target_state == 0)//AUTOMATIC
 	{
 		if (active_status ==1)
 		{
@@ -300,13 +314,13 @@ void update_temp() {
 
 		/* code */
 	}
-	else if (target_state == 1) {
+	else if (target_state == 1) { //HEAT
 	 //Read the Heat target
 		target_temp1= heating_threshold.value.float_value;
 		current_heater_cooler_state.value = HOMEKIT_UINT8(target_state+1);
 		homekit_characteristic_notify(&current_heater_cooler_state, current_heater_cooler_state.value);
 	}
-	else
+	else if (target_state == 2) //COOLING
 	{
 	 //Else read the Cool target
 		target_temp1= cooling_threshold.value.float_value; 
@@ -390,11 +404,13 @@ sysparam_status_t status;
 			if (status == SYSPARAM_OK){
 				printf("Temp:%d \n",current_ac_temp);
 			cooling_threshold.value = HOMEKIT_FLOAT((float)current_ac_temp);
+			
 			}
 		}
 	
 		current_heater_cooler_state.value = HOMEKIT_UINT8(new_current_status);
 		target_heater_cooler_state.value = HOMEKIT_UINT8(current_ac_mode);
+		
 	 }
 
 
@@ -826,9 +842,6 @@ void on_event(homekit_event_t event) {
 		 printf("SERVER JUST INITIALIZED\n");
 		
 		 if (homekit_is_paired()){
-			
-
-
 			if (USE_THINGSPEAK == 1 && Http_TaskStarted==false){
 				//Start the ThingsSpeak process
 				FREEHEAP();
@@ -841,6 +854,7 @@ void on_event(homekit_event_t event) {
 
 			if (extra_function_TaskStarted ==false)
 			{
+				 if (sdk_wifi_station_get_connect_status() == STATION_GOT_IP) {
 				UDPLOG_PRINTF_TO_UDP;
 				//UDPLOG_PRINTF_ALSO_SERIAL;
     			//udplog_init(3);
@@ -857,14 +871,14 @@ void on_event(homekit_event_t event) {
 				adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
 				adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
 						
-
+				 }
 			}
 
 			if (param_started == false){
 			int_ac_state();
 			param_started=true;
-		}	
-		 }
+			}	
+		}
 		 
     }
     else if (event == HOMEKIT_EVENT_CLIENT_CONNECTED) {
@@ -898,6 +912,7 @@ void on_event(homekit_event_t event) {
 
 				if (extra_function_TaskStarted ==false)
 				{
+					 if (sdk_wifi_station_get_connect_status() == STATION_GOT_IP) {
 					UDPLOG_PRINTF_TO_UDP;
 					//UDPLOG_PRINTF_ALSO_SERIAL;
 					//udplog_init(3);
@@ -913,7 +928,7 @@ void on_event(homekit_event_t event) {
 					adv_toggle_create(motion_sensor_gpio, false);  // false -> without internal pull-up resistor
 					adv_toggle_register_callback_fn(motion_sensor_gpio, movement_detected_fn, 1);    // High gpio state
 					adv_toggle_register_callback_fn(motion_sensor_gpio, movement_not_detected_fn, 0);    // Low gpio state
-					
+					 }
 				}	
 
 				if (param_started == false){
