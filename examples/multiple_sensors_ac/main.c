@@ -10,6 +10,7 @@
 #include <wifi_config.h>
 #include <led_codes.h>
 #include <adv_button.h>
+#include <led_status.h>
 
 #include <dht/dht.h>
 #include <ds18b20/ds18b20.h>
@@ -51,9 +52,9 @@ char serial_value[13];  //Device Serial is set upon boot based on MAC address
 #define FW_VERSION "0.0.1"
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-#define	USE_THINGSPEAK 0 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
+#define	USE_THINGSPEAK 1 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
 #define WEB_SERVER "api.thingspeak.com"
-#define API_KEY  "xxx" //Aigaleo Private API key. This is personal and can been  obtained by ThingsSpeak.com
+#define API_KEY  "xxx" //Private Key
 
 #define FIELD1 "field1=" //temp
 #define FIELD2 "field2=" //hum
@@ -61,7 +62,7 @@ char serial_value[13];  //Device Serial is set upon boot based on MAC address
 #define WEB_PATH "/update?api_key="
 #define THINGSPEAK_INTERVAL 600000 //600000 = 10min , 300000 = 5min 60000 = 1min
 #define NUMBER_OF_RETRIES 5
-bool Http_TaskStarted = false;
+bool Http_TaskStarted  =false;
 
 TaskHandle_t callThingsProcess_handle = NULL;
 
@@ -96,9 +97,36 @@ volatile bool paired = false;
 bool led_value = false; //This is to keep track of the LED status. 
 volatile bool Wifi_Connected = false; 
 
+
+
 bool extra_function_TaskStarted = false;
 bool param_started = false;
 ETSTimer extra_func_timer ;
+
+
+
+//####################################################################################
+//LED codes
+// 1000ms ON, 1000ms OFF
+led_status_pattern_t waiting_wifi = LED_STATUS_PATTERN({1500, -500});
+
+// one short blink every 3 seconds
+led_status_pattern_t normal_mode = LED_STATUS_PATTERN({100, -2900});
+
+// one short blink every 3 seconds
+led_status_pattern_t unpaired  = LED_STATUS_PATTERN({100, -100, 100, -100, 100, -700});
+
+led_status_pattern_t pairing_started  = LED_STATUS_PATTERN({400, -200,400, -200, 400, -200, 100, -700});
+
+
+// three short blinks
+led_status_pattern_t three_short_blinks = LED_STATUS_PATTERN({100, -100, 100, -100, 100, -700});
+
+#define STATUS_LED_PIN 2
+
+static led_status_t led_status ;
+//####################################################################################
+
 
 void on_update(homekit_characteristic_t *ch, homekit_value_t value, void *context) {
     update_state();
@@ -271,7 +299,7 @@ void update_state() {
 	{	
 		if(target_state == 0){
 		ac_button_aut();
-		led_code(led_gpio, FUNCTION_C);
+		led_status_signal(led_status, &three_short_blinks);
 		}
 		else if ((target_state + 1 )!=current_state){
 		//printf("AC is now ON, updating temp\n" );
@@ -333,7 +361,7 @@ void update_temp() {
 	sysparam_set_int8("ac_mode",target_state);
 	sysparam_set_int8("ac_temp",(int)target_temp1);
  	ac_command(target_state,target_temp1);
-	led_code(led_gpio, FUNCTION_C);
+	led_status_signal(led_status, &three_short_blinks);
 
 }
 
@@ -352,7 +380,7 @@ void update_active() {
 		if (target_state == 0)
 		{
 			ac_button_aut();
-			led_code(led_gpio, FUNCTION_C);
+			led_status_signal(led_status, &three_short_blinks);
 		}
 		else
 		{
@@ -364,7 +392,7 @@ void update_active() {
 	if (active_status == 0  ) {
 	//	printf("OFF\n" );
 	ac_button_off();
-	led_code(led_gpio, FUNCTION_C);
+	led_status_signal(led_status, &three_short_blinks);
 	}
 
 	
@@ -717,7 +745,8 @@ void movement_detected_fn(const uint8_t gpio) {
 	printf("Movement detected\n");
 	old_move_value = true;
 	motion_detected.value = HOMEKIT_BOOL(old_move_value);
-	led_write(old_move_value);
+	//led_write(old_move_value);
+	led_status_signal(led_status, &three_short_blinks);
 	homekit_characteristic_notify(&motion_detected, HOMEKIT_BOOL(old_move_value));
 	
 }
@@ -727,7 +756,7 @@ void movement_not_detected_fn(const uint8_t gpio) {
 
 	old_move_value = false;
 	motion_detected.value = HOMEKIT_BOOL(old_move_value);
-	led_write(old_move_value);
+
 	homekit_characteristic_notify(&motion_detected, HOMEKIT_BOOL(old_move_value));
 }
 
@@ -737,7 +766,7 @@ void movement_not_detected_fn(const uint8_t gpio) {
 void button_callback_single(const uint8_t gpio) {
 
 	printf("Toggling relay\n");
-	led_write(!led_value); //A Single press will just toggle the LED. This was left for testing purposes. 
+	//led_write(!led_value); //A Single press will just toggle the LED. This was left for testing purposes. 
 	//The following code is left commented in case we want to implement a single button for something else in homekit. 
 	//switch_on.value.bool_value = !switch_on.value.bool_value;
 	//relay_write(switch_on.value.bool_value);
@@ -745,7 +774,7 @@ void button_callback_single(const uint8_t gpio) {
 
 	//http_get_task(1);
 	// xTaskCreate(http_get_task, "http", 256, NULL, 1, NULL);
-		//vTaskDelay(100 / portTICK_PERIOD_MS);
+	//vTaskDelay(100 / portTICK_PERIOD_MS);
 			
 }
 
@@ -838,11 +867,13 @@ homekit_accessory_t *accessories[] = {
 
 void on_event(homekit_event_t event) {
     if (event == HOMEKIT_EVENT_SERVER_INITIALIZED) {
-        //led_status_set(led_status, paired ? &normal_mode : &unpaired);
+        led_status_set(led_status, paired ? NULL : &unpaired);
 		 printf("SERVER JUST INITIALIZED\n");
 		
 		 if (homekit_is_paired()){
-			if (USE_THINGSPEAK == 1 && Http_TaskStarted==false){
+			 //led_status_set(led_status, NULL);
+			 
+			if (USE_THINGSPEAK == 1 && !Http_TaskStarted){
 				//Start the ThingsSpeak process
 				FREEHEAP();
 				if (xPortGetFreeHeapSize()>8000){
@@ -851,7 +882,7 @@ void on_event(homekit_event_t event) {
 				Http_TaskStarted=true;
 				}
 			}
-
+		 
 			if (extra_function_TaskStarted ==false)
 			{
 				 if (sdk_wifi_station_get_connect_status() == STATION_GOT_IP) {
@@ -879,28 +910,32 @@ void on_event(homekit_event_t event) {
 			param_started=true;
 			}	
 		}
+	
 		 
     }
     else if (event == HOMEKIT_EVENT_CLIENT_CONNECTED) {
         if (!paired)
-           // led_status_set(led_status, &pairing);
+            led_status_set(led_status, &pairing_started);
 	   		printf("CLIENT JUST CONNECTED\n");
 	   
 	   
     }
     else if (event == HOMEKIT_EVENT_CLIENT_DISCONNECTED) {
         if (!paired)
-            //led_status_set(led_status, &unpaired);
+            led_status_set(led_status, &unpaired);
 			printf("CLIENT JUST DISCONNECTED\n");
+
     }
 	else if (event == HOMEKIT_EVENT_CLIENT_VERIFIED) {
 		printf("CLIENT JUST VERIFIED\n");
 		if (homekit_is_paired())
 		{
-			if (callThingsProcess_handle != NULL)
+			led_status_set(led_status, NULL);
+			if (callThingsProcess_handle == NULL)
+			{
 				//printf("The CALL PROCESS IS NOT NULL\n");
-
-				if (USE_THINGSPEAK == 1 && Http_TaskStarted == false){
+				printf("\n\n\n\n\n\n\nHTTP FLAG IS %d\n\n\n\n\n\n\n\n",Http_TaskStarted);
+				if (USE_THINGSPEAK == 1 && !Http_TaskStarted){
 					//Start the ThingsSpeak process
 					FREEHEAP();
 					if (xPortGetFreeHeapSize()>8000){
@@ -909,7 +944,7 @@ void on_event(homekit_event_t event) {
 					Http_TaskStarted=true;
 					}
 				}
-
+			}
 				if (extra_function_TaskStarted ==false)
 				{
 					 if (sdk_wifi_station_get_connect_status() == STATION_GOT_IP) {
@@ -936,14 +971,14 @@ void on_event(homekit_event_t event) {
 					param_started=true;
 				}
 
-		 }
-
+		 
+		}
 
 
 	}
     else if (event == HOMEKIT_EVENT_PAIRING_ADDED || event == HOMEKIT_EVENT_PAIRING_REMOVED) {
 		paired = homekit_is_paired();
-		// led_status_set(led_status, paired ? &normal_mode : &unpaired);
+		led_status_set(led_status, paired ? NULL : &unpaired);
 		printf("CLIENT JUST PAIRED\n");
 
 		if (!paired){
@@ -1018,8 +1053,10 @@ void on_wifi_event(wifi_config_event_t event) {
 
 
     if (event == WIFI_CONFIG_CONNECTED) {
-        printf("CONNECTED TO >>> WIFI <<<\n");
+    printf("CONNECTED TO >>> WIFI <<<\n");
+	led_status_signal(led_status, &three_short_blinks); //This is needed, otherwise the library does not work well.
 	
+	//led_status_set(led_status,NULL);
 	Wifi_Connected=true;
 
 	create_accessory_name();
@@ -1052,6 +1089,7 @@ void on_wifi_event(wifi_config_event_t event) {
     } else if (event == WIFI_CONFIG_DISCONNECTED) {
 		Wifi_Connected = false;
         printf("DISCONNECTED FROM >>> WIFI <<<\n");
+		led_status_set(led_status,&waiting_wifi);
     }
 }
 
@@ -1059,7 +1097,7 @@ void on_wifi_event(wifi_config_event_t event) {
 
 void hardware_init() {
     gpio_enable(led_gpio, GPIO_OUTPUT);
-    led_write(true);
+  //  led_write(true);
 
 	gpio_set_pullup(SENSOR_PIN, false, false);
 	gpio_set_pullup(IR_PIN, false, false);
@@ -1070,6 +1108,11 @@ void hardware_init() {
 	adv_button_create(button_gpio, true);
 	adv_button_register_callback_fn(button_gpio, button_callback_single, 1);
 	adv_button_register_callback_fn(button_gpio, button_hold_callback, 2);	
+
+	 led_status = led_status_init(STATUS_LED_PIN, 0);
+	 
+	  
+	 
 }
 
 

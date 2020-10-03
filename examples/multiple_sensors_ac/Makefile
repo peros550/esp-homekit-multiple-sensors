@@ -12,6 +12,7 @@ EXTRA_COMPONENTS = \
 	$(abspath ../../components/esp-8266/wifi_config) \
 	$(abspath ../../components/common/wolfssl) \
 	$(abspath ../../components/esp-8266/cJSON) \
+	$(abspath ../../components/esp-led-status) \
 	$(abspath ../../components/common/homekit)\
 	$(abspath ../../components/esp-ir)\
 	$(abspath ../../components/UDPlogger)
@@ -29,8 +30,8 @@ HOMEKIT_SMALL = 0
 
 
 EXTRA_CFLAGS += -I../.. -DHOMEKIT_SHORT_APPLE_UUIDS
-#EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_VERIFY
-#EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_SETUP
+EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_VERIFY
+EXTRA_CFLAGS += -DHOMEKIT_OVERCLOCK_PAIR_SETUP
 EXTRA_CFLAGS += -DUDPLOG_PRINTF_TO_UDP
 EXTRA_CFLAGS += -DUDPLOG_PRINTF_ALSO_SERIAL
 EXTRA_CFLAGS += -DLWIP_NETIF_HOSTNAME=1
