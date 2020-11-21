@@ -38,6 +38,7 @@
 #include "lwip/sys.h"
 #include "lwip/netdb.h"
 #include "lwip/dns.h"
+#include "lwip/api.h"
 
 #include "ac_commands.h"
 
@@ -52,12 +53,12 @@ char serial_value[13];  //Device Serial is set upon boot based on MAC address
 #define FW_VERSION "0.0.1"
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-#define	USE_THINGSPEAK 1 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
+//#define	USE_THINGSPEAK 0 //Turn this into '1' if you want to use log temperature/humidity data at ThingsSpeak.com server
+bool USE_THINGSPEAK =false ;
 #define WEB_SERVER "api.thingspeak.com"
-#define API_KEY  "xxx" //Private Key
-
-#define FIELD1 "field1=" //temp
-#define FIELD2 "field2=" //hum
+char *API_KEY = NULL; //Private Key
+char *FIELD1 = NULL; //temp
+char *FIELD2 = NULL; //hum
 #define WEB_PORT "80"
 #define WEB_PATH "/update?api_key="
 #define THINGSPEAK_INTERVAL 600000 //600000 = 10min , 300000 = 5min 60000 = 1min
@@ -100,10 +101,175 @@ volatile bool Wifi_Connected = false;
 
 
 bool extra_function_TaskStarted = false;
+bool extra_http_TaskStarted = false;
 bool param_started = false;
 ETSTimer extra_func_timer ;
 
+void httpd_task(void *pvParameters)
+{
+	if (!FIELD1)
+	FIELD1= malloc(20);
 
+	if (!API_KEY)
+	API_KEY= malloc(20);
+
+	if (!FIELD2)
+	FIELD2= malloc(20);
+
+    struct netconn *client = NULL;
+    struct netconn *nc = netconn_new(NETCONN_TCP);
+    if (nc == NULL) {
+        printf("Failed to allocate socket.\n");
+        vTaskDelete(NULL);
+    }
+    netconn_bind(nc, IP_ADDR_ANY, 81);
+    netconn_listen(nc);
+    char buf[920];
+    const char *webpage = {
+        "HTTP/1.1 200 OK\r\n"
+        "Content-type: text/html\r\n\r\n"
+        "<html><head><title>HTTP Server</title>"
+        "<style> div.main {"
+        "font-family: Arial;"
+        "padding: 0.01em 16px;"
+        "box-shadow: 2px 2px 1px 1px #d2d2d2;"
+        "background-color: #f1f1f1;}"
+        "</style></head>"
+        "<body><div class='main'>"
+        "<h3>Homekit AC</h3>"
+        "<p>URL: %s</p>"
+        "<p>Uptime: %d seconds</p>"
+        "<p>Free heap: %d bytes</p>"
+		"<p>Thingspeak: %d</p>"
+		"<p>API: %s</p>"
+		"<p>Field1: %s</p>"
+		"<p>Field2: %s</p>"
+        "<button onclick=\"location.href='/REBOOT'\" type='button'>"
+        "Reboot</button></p>"
+        "<button onclick=\"location.href='/UPDATE'\" type='button'>"
+        "Update</button></p>"
+		"<button onclick=\"location.href='/OFF'\" type='button'>"
+        "AC</button></p>"
+		"<button onclick=\"location.href='/COOL'\" type='button'>"
+        "COOL</button></p>"
+		"<button onclick=\"location.href='/HEAT'\" type='button'>"
+        "HEAT</button></p>"
+        "</div></body></html>"
+    };
+    /* disable LED */
+
+    while (1) {
+        err_t err = netconn_accept(nc, &client);
+        if (err == ERR_OK) {
+            struct netbuf *nb;
+            if ((err = netconn_recv(client, &nb)) == ERR_OK) {
+                void *data;
+                u16_t len;
+                netbuf_data(nb, &data, &len);
+                /* check for a GET request */
+                if (!strncmp(data, "GET ", 4)) {
+                    char uri[25];
+                    const int max_uri_len = 25;
+                    char *sp1, *sp2;
+                    /* extract URI */
+                    sp1 = data + 4;
+                    sp2 = memchr(sp1, ' ', max_uri_len);
+                    int len = sp2 - sp1;
+                    memcpy(uri, sp1, len);
+                    uri[len] = '\0';
+                    printf("uri: %s\n", uri);
+                    if (!strncmp(uri, "/REBOOT", max_uri_len))
+                       sdk_system_restart();
+				    else if (!strncmp(uri, "/UPDATE", max_uri_len))
+					{
+						printf("Updating firmware...\n");
+						rboot_set_temp_rom(1);
+						vTaskDelay(1000 / portTICK_PERIOD_MS);
+						sdk_system_restart();
+					}
+                    else if (!strncmp(uri, "/OFF", max_uri_len))
+					{
+						ac_button_off();
+					}
+					else if (!strncmp(uri, "/COOL", max_uri_len))
+					{
+						ac_command(2,22);
+					}
+					else if (!strncmp(uri, "/HEAT", max_uri_len))
+					{
+						ac_command(1,27);
+					}
+					else if (!strncmp(uri, "/thingspeak", max_uri_len))
+					{
+
+						USE_THINGSPEAK = !USE_THINGSPEAK ;
+						sysparam_set_int8("USE_THINGSPEAK",(int) USE_THINGSPEAK);
+						if (USE_THINGSPEAK == false) {
+							//If the flag just turned false, you must delete the already current task. 
+							taskHttp_delete();
+						}
+
+					}
+					else if (!strncmp(uri, "/reset-homekit", max_uri_len))
+					{
+						printf("Resetting HomeKit Config\n");
+						homekit_server_reset();
+						vTaskDelay(1000 / portTICK_PERIOD_MS);
+						printf("Restarting\n");
+						sdk_system_restart();
+					}
+					else if (!strncmp(uri, "/api", 4))
+					{
+						if (!API_KEY)
+						API_KEY= malloc(20);
+						int length1 = strlen(uri);
+						strncpy(API_KEY,uri+5,length1-4);
+						sysparam_set_string("API_KEY",API_KEY);
+					}
+					else if (!strncmp(uri, "/field1", 7))
+					{
+						int length1 = strlen(uri);
+						if((length1-7)<10 && length1>7)
+						{
+							if (!FIELD1)
+							FIELD1= malloc(20);
+							strncpy(FIELD1,uri+8,length1-6);
+							printf("%s\n",FIELD1);
+							sysparam_set_string("FIELD1",FIELD1);
+						}
+					}
+					else if (!strncmp(uri, "/field2", 7))
+										{
+						int length1 = strlen(uri);
+						if((length1-7)<10 && length1>7)
+						{
+							if (!FIELD2)
+							FIELD2= malloc(20);
+							strncpy(FIELD2,uri+8,length1-6);
+							printf("%s\n",FIELD2);
+							sysparam_set_string("FIELD2",FIELD2);
+						}
+					}
+					
+
+                    //    gpio_write(2, true);
+					printf("TEST\n");
+                    snprintf(buf, sizeof(buf), webpage,
+                            uri,
+                            xTaskGetTickCount() * portTICK_PERIOD_MS / 1000,
+                            (int) xPortGetFreeHeapSize(),(int) USE_THINGSPEAK,API_KEY,FIELD1,FIELD2);
+                    netconn_write(client, buf, strlen(buf), NETCONN_COPY);
+               
+			    }
+            }
+            netbuf_delete(nb);
+			
+        }
+        printf("Closing connection\n");
+        netconn_close(client);
+        netconn_delete(client);
+    }
+}
 
 //####################################################################################
 //LED codes
@@ -266,8 +432,8 @@ homekit_characteristic_t current_heater_cooler_state = HOMEKIT_CHARACTERISTIC_(C
 homekit_characteristic_t target_heater_cooler_state = HOMEKIT_CHARACTERISTIC_(TARGET_HEATER_COOLER_STATE, 0, .callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_update));
 //optionals
 //homekit_characteristic_t units = HOMEKIT_CHARACTERISTIC_(TEMPERATURE_DISPLAY_UNITS, 0);
-homekit_characteristic_t cooling_threshold = HOMEKIT_CHARACTERISTIC_(COOLING_THRESHOLD_TEMPERATURE, 18,.callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_temp_update),.min_value = (float[]) {16},.max_value = (float[]) {30},.min_step = (float[]) {1} );
-homekit_characteristic_t heating_threshold = HOMEKIT_CHARACTERISTIC_(HEATING_THRESHOLD_TEMPERATURE, 22,.callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_temp_update),.min_value = (float[]) {16},.max_value = (float[]) {30},.min_step = (float[]) {1});
+homekit_characteristic_t cooling_threshold = HOMEKIT_CHARACTERISTIC_(COOLING_THRESHOLD_TEMPERATURE, 18,.callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_temp_update),.min_value = (float[]) {18},.max_value = (float[]) {30},.min_step = (float[]) {1} );
+homekit_characteristic_t heating_threshold = HOMEKIT_CHARACTERISTIC_(HEATING_THRESHOLD_TEMPERATURE, 25,.callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_temp_update),.min_value = (float[]) {18},.max_value = (float[]) {30},.min_step = (float[]) {1});
 //homekit_characteristic_t rotation_speed = HOMEKIT_CHARACTERISTIC_(ROTATION_SPEED, 0, .callback=HOMEKIT_CHARACTERISTIC_CALLBACK(on_update));
 
 //Device Information
@@ -446,6 +612,24 @@ sysparam_status_t status;
 	 if (status == SYSPARAM_OK){
 	active.value = HOMEKIT_UINT8(stored_active_state);
 	 }
+
+	//Thingspeak parameters initialiazation
+
+	if (!FIELD1)
+	FIELD1= malloc(20);
+
+	if (!API_KEY)
+	API_KEY= malloc(20);
+
+	if (!FIELD2)
+	FIELD2= malloc(20);
+
+	status = sysparam_get_int8("USE_THINGSPEAK", &USE_THINGSPEAK);
+	status = sysparam_get_string("API_KEY",&API_KEY);
+	status = sysparam_get_string("FIELD1",&FIELD1);
+	status = sysparam_get_string("FIELD2",&FIELD2);
+
+
 	
 }
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -575,7 +759,11 @@ if (Wifi_Connected == true)
 			printf("%s \n",hum1 );
 			
 
-			char req[300]="GET " WEB_PATH API_KEY "&" FIELD1;
+			//char req[300]="GET " WEB_PATH API_KEY "&" FIELD1;
+			char req[300]="GET " WEB_PATH;
+			strncat(req,API_KEY,16);
+			strncat(req,"&",2);
+			strncat(req,FIELD1,20);
 			strncat(req,temp2,10);
 			strncat(req,"&",2);
 			strncat(req,FIELD2,20);
@@ -730,8 +918,11 @@ void sensor_worker() {
 	 	 if (light_value != old_light_value) 
 		 {
 		 old_light_value = light_value;
-		 currentAmbientLightLevel.value.float_value = (1024 - light_value);
-		 homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT((1024 - light_value))); 
+		 //currentAmbientLightLevel.value.float_value = (1024 - light_value);
+		 //homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT((1024 - light_value))); 
+		currentAmbientLightLevel.value.float_value = ( light_value);
+		homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT(( light_value))); 
+		
 		}
 		
 	//	uint32_t freeheap = xPortGetFreeHeapSize();
@@ -823,7 +1014,7 @@ homekit_accessory_t *accessories[] = {
         }),
         NULL
     }),
- HOMEKIT_ACCESSORY( .category=homekit_accessory_category_switch, .services=(homekit_service_t*[]){
+ HOMEKIT_ACCESSORY( .category=homekit_accessory_category_sensor, .services=(homekit_service_t*[]){
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
             &name,
            	&manufacturer,
@@ -833,11 +1024,12 @@ homekit_accessory_t *accessories[] = {
             HOMEKIT_CHARACTERISTIC(IDENTIFY, temperature_sensor_identify),
             NULL
         }),
-        HOMEKIT_SERVICE(SWITCH, .primary=true, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Sonoff Switch"),
-            &switch_on,
+		HOMEKIT_SERVICE(MOTION_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]){
+            HOMEKIT_CHARACTERISTIC(NAME, "Motion Sensor"),
+            &motion_detected,
             NULL
-        }),
+        }), 
+
         		HOMEKIT_SERVICE(TEMPERATURE_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]) {
             HOMEKIT_CHARACTERISTIC(NAME, "Temperature Sensor"),
 			&temperature,
@@ -848,11 +1040,7 @@ homekit_accessory_t *accessories[] = {
             &currentAmbientLightLevel,
             NULL
         }),
-		        HOMEKIT_SERVICE(MOTION_SENSOR, .primary=true, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Motion Sensor"),
-            &motion_detected,
-            NULL
-        }), 
+		  
         HOMEKIT_SERVICE(HUMIDITY_SENSOR, .characteristics=(homekit_characteristic_t*[]) {
             HOMEKIT_CHARACTERISTIC(NAME, "Humidity Sensor"),
 			&humidity,
@@ -864,16 +1052,28 @@ homekit_accessory_t *accessories[] = {
     
 };
 
-
+int event_counter =0;
 void on_event(homekit_event_t event) {
+	paired = homekit_is_paired();
+	event_counter+=1;
+
+			if ((!paired && event_counter>15) || paired){ 
+			if (extra_http_TaskStarted == false){
+				extra_http_TaskStarted = true;
+				xTaskCreate(&httpd_task, "http_server", 1024, NULL, tskIDLE_PRIORITY+2, NULL);
+				printf("\n\nSTARTING HTTP SEVER . . . \n\n");	 	
+			 }
+			 }
+
+
     if (event == HOMEKIT_EVENT_SERVER_INITIALIZED) {
         led_status_set(led_status, paired ? NULL : &unpaired);
 		 printf("SERVER JUST INITIALIZED\n");
 		
-		 if (homekit_is_paired()){
+		 if (paired == true){
 			 //led_status_set(led_status, NULL);
 			 
-			if (USE_THINGSPEAK == 1 && !Http_TaskStarted){
+			if (USE_THINGSPEAK == true && !Http_TaskStarted){
 				//Start the ThingsSpeak process
 				FREEHEAP();
 				if (xPortGetFreeHeapSize()>8000){
@@ -914,28 +1114,49 @@ void on_event(homekit_event_t event) {
 		 
     }
     else if (event == HOMEKIT_EVENT_CLIENT_CONNECTED) {
-        if (!paired)
+        if (!paired){
             led_status_set(led_status, &pairing_started);
+		}
+		else
+		{
+			 led_status_set(led_status, NULL);
+		}
+		
 	   		printf("CLIENT JUST CONNECTED\n");
 	   
 	   
     }
     else if (event == HOMEKIT_EVENT_CLIENT_DISCONNECTED) {
-        if (!paired)
-            led_status_set(led_status, &unpaired);
-			printf("CLIENT JUST DISCONNECTED\n");
+        if (!paired){
+ 			led_status_set(led_status, &unpaired);
+
+		}else
+		{
+			//Τhis is where I start secondart tasks. The pairing has already been completed and a first client disconnection has happened. 
+			//if (extra_http_TaskStarted == false){
+			//	extra_http_TaskStarted = true;
+			//	xTaskCreate(&httpd_task, "http_server", 1024, NULL, tskIDLE_PRIORITY+2, NULL);
+			// }
+		}
+		
+        printf("CLIENT JUST DISCONNECTED\n");
 
     }
 	else if (event == HOMEKIT_EVENT_CLIENT_VERIFIED) {
 		printf("CLIENT JUST VERIFIED\n");
-		if (homekit_is_paired())
+		if (paired == true)
 		{
+			if (extra_http_TaskStarted == false){
+				extra_http_TaskStarted = true;
+				xTaskCreate(&httpd_task, "http_server", 1024, NULL, tskIDLE_PRIORITY+2, NULL);
+			 }
+			
 			led_status_set(led_status, NULL);
 			if (callThingsProcess_handle == NULL)
 			{
 				//printf("The CALL PROCESS IS NOT NULL\n");
-				printf("\n\n\n\n\n\n\nHTTP FLAG IS %d\n\n\n\n\n\n\n\n",Http_TaskStarted);
-				if (USE_THINGSPEAK == 1 && !Http_TaskStarted){
+				printf("\n\n\n\n\n\n\nHTTP FLAG IS %d\n\n\n\n\n\n\n\n",(int)Http_TaskStarted);
+				if (USE_THINGSPEAK == true && !Http_TaskStarted){
 					//Start the ThingsSpeak process
 					FREEHEAP();
 					if (xPortGetFreeHeapSize()>8000){
@@ -1048,45 +1269,46 @@ homekit_server_config_t config = {
 	.on_event = on_event,
 };
 
-
 void on_wifi_event(wifi_config_event_t event) {
 
 
-    if (event == WIFI_CONFIG_CONNECTED) {
-    printf("CONNECTED TO >>> WIFI <<<\n");
-	led_status_signal(led_status, &three_short_blinks); //This is needed, otherwise the library does not work well.
-	
-	//led_status_set(led_status,NULL);
-	Wifi_Connected=true;
+    if (event == WIFI_CONFIG_CONNECTED) 
+	{
+		printf("CONNECTED TO >>> WIFI <<<\n");
+		//led_status_signal(led_status, &three_short_blinks); //This seemed like needed, otherwise the library does not work well.
+		led_status_set(led_status, NULL);
+		
+		//led_status_set(led_status,NULL);
+		Wifi_Connected=true;
 
-	create_accessory_name();
-	char *custom_hostname = name.value.string_value;
-	struct netif *netif = sdk_system_get_netif(STATION_IF);
-    if (netif) {
-		 printf("HOSTNAME set>>>>>:%s\n", custom_hostname);
-        LOCK_TCPIP_CORE();
-        dhcp_release_and_stop(netif);
-        netif->hostname = "foobar";
-		netif->hostname =custom_hostname;
-        dhcp_start(netif);
-        UNLOCK_TCPIP_CORE();
-    }
+		create_accessory_name();
+		char *custom_hostname = name.value.string_value;
+		struct netif *netif = sdk_system_get_netif(STATION_IF);
+			if (netif) {
+				printf("HOSTNAME set>>>>>:%s\n", custom_hostname);
+				LOCK_TCPIP_CORE();
+				dhcp_release_and_stop(netif);
+				netif->hostname = "foobar";
+				netif->hostname =custom_hostname;
+				dhcp_start(netif);
+				UNLOCK_TCPIP_CORE();
+			}
 
-//OTA
-    int c_hash=ota_read_sysparam(&manufacturer.value.string_value,&serial.value.string_value,
-                                      &model.value.string_value,&revision.value.string_value);
+			//OTA
+			int c_hash=ota_read_sysparam(&manufacturer.value.string_value,&serial.value.string_value,
+											&model.value.string_value,&revision.value.string_value);
+			
+
+			c_hash=1; revision.value.string_value="0.0.1"; //cheat line
+			config.accessories[0]->config_number=c_hash;
     
 
-	//c_hash=1; revision.value.string_value="0.0.1"; //cheat line
-	config.accessories[0]->config_number=c_hash;
-    
 
-
-    homekit_server_init(&config);
-	FREEHEAP();
-	
-
-    } else if (event == WIFI_CONFIG_DISCONNECTED) {
+			homekit_server_init(&config);
+			FREEHEAP();
+    } 
+	else if (event == WIFI_CONFIG_DISCONNECTED)
+	 {
 		Wifi_Connected = false;
         printf("DISCONNECTED FROM >>> WIFI <<<\n");
 		led_status_set(led_status,&waiting_wifi);
@@ -1121,6 +1343,6 @@ void user_init(void) {
     printf("SDK version:%s\n", sdk_system_get_sdk_version());
 	hardware_init();
 	//wifi_config_init("Homekit-sensor", NULL, on_wifi_ready);
-	wifi_config_init2("Homekit-sensor", NULL, on_wifi_event);
+	wifi_config_init2("Homekit-Sensor", NULL, on_wifi_event);
   
 }
