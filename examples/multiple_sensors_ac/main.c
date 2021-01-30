@@ -1282,6 +1282,7 @@ void on_wifi_event(wifi_config_event_t event) {
 		Wifi_Connected=true;
 
 		create_accessory_name();
+	    	if (homekit_is_paired()){
 		char *custom_hostname = name.value.string_value;
 		struct netif *netif = sdk_system_get_netif(STATION_IF);
 			if (netif) {
@@ -1293,7 +1294,7 @@ void on_wifi_event(wifi_config_event_t event) {
 				dhcp_start(netif);
 				UNLOCK_TCPIP_CORE();
 			}
-
+		}
 			//OTA
 			int c_hash=ota_read_sysparam(&manufacturer.value.string_value,&serial.value.string_value,
 											&model.value.string_value,&revision.value.string_value);
