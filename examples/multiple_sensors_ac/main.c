@@ -1282,19 +1282,19 @@ void on_wifi_event(wifi_config_event_t event) {
 		Wifi_Connected=true;
 
 		create_accessory_name();
-	    	if (homekit_is_paired()){
-		char *custom_hostname = name.value.string_value;
-		struct netif *netif = sdk_system_get_netif(STATION_IF);
-			if (netif) {
-				printf("HOSTNAME set>>>>>:%s\n", custom_hostname);
-				LOCK_TCPIP_CORE();
-				dhcp_release_and_stop(netif);
-				netif->hostname = "foobar";
-				netif->hostname =custom_hostname;
-				dhcp_start(netif);
-				UNLOCK_TCPIP_CORE();
-			}
-		}
+	//  	if (homekit_is_paired()){
+	//	char *custom_hostname = name.value.string_value;
+	//	struct netif *netif = sdk_system_get_netif(STATION_IF);
+	//		if (netif) {
+	//			printf("HOSTNAME set>>>>>:%s\n", custom_hostname);
+	//			LOCK_TCPIP_CORE();
+	//			dhcp_release_and_stop(netif);
+	//			netif->hostname = "foobar";
+	//			netif->hostname =custom_hostname;
+	//			dhcp_start(netif);
+	//			UNLOCK_TCPIP_CORE();
+	//		}
+	//	}
 			//OTA
 			int c_hash=ota_read_sysparam(&manufacturer.value.string_value,&serial.value.string_value,
 											&model.value.string_value,&revision.value.string_value);
