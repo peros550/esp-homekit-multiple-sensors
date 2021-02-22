@@ -99,6 +99,14 @@ bool led_value = false; //This is to keep track of the LED status.
 volatile bool Wifi_Connected = false; 
 
 
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+//Light Sensor Parameters
+#define LIGHT_SENSOR_TYPE               (0)
+#define LUX_CALC_SCALAR                 (14357564.33)
+#define LIGHT_SENSOR_OFFSET             (0)
+#define LIGHT_SENSOR_RESISTOR           (8500)
+#define LUX_CALC_EXPONENT               (1.396066767)
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 bool extra_function_TaskStarted = false;
 bool extra_http_TaskStarted = false;
@@ -189,7 +197,9 @@ void httpd_task(void *pvParameters)
 					}
                     else if (!strncmp(uri, "/OFF", max_uri_len))
 					{
+						taskENTER_CRITICAL();
 						ac_button_off();
+						taskEXIT_CRITICAL();
 					}
 					else if (!strncmp(uri, "/COOL", max_uri_len))
 					{
@@ -270,6 +280,77 @@ void httpd_task(void *pvParameters)
         netconn_delete(client);
     }
 }
+
+inline double fast_precise_pow(double a, double b) {
+    int e = abs((int)b);
+
+    union {
+        double d;
+        int x[2];
+    } u = { a };
+
+    u.x[1] = (int) ((b - e) * (u.x[1] - 1072632447) + 1072632447);
+    u.x[0] = 0;
+
+    double r = 1.0;
+
+    while (e) {
+        if (e & 1) {
+            r *= a;
+        }
+        a *= a;
+        e >>= 1;
+    }
+
+    return r * u.d;
+}
+
+float light_sensor_task() {
+	// https://www.allaboutcircuits.com/projects/design-a-luxmeter-using-a-light-dependent-resistor/
+	//Thanks to: https://github.com/RavenSystem/esp-homekit-devices/blob/2fd952227bedebc6694236fe64129b6861791dac/devices/HAA/main.c#L3258
+      
+	float luxes = 0.0001f;
+
+	const float adc_raw_read = sdk_system_adc_read();
+ 	float ldr_resistor;
+	if (LIGHT_SENSOR_TYPE < 2) {
+
+		if (LIGHT_SENSOR_TYPE == 0) {
+					ldr_resistor = LIGHT_SENSOR_RESISTOR * ((1023.1 - adc_raw_read) / adc_raw_read);
+		} 
+		else if (LIGHT_SENSOR_TYPE == 1)
+		{
+					ldr_resistor = (LIGHT_SENSOR_RESISTOR  * adc_raw_read) / (1023.1 - adc_raw_read);
+		}
+		luxes = 1 / fast_precise_pow(ldr_resistor, LUX_CALC_EXPONENT);
+		luxes = (luxes * LUX_CALC_SCALAR) + LIGHT_SENSOR_OFFSET;
+		}
+	else if (LIGHT_SENSOR_TYPE == 2)
+	{
+		luxes = adc_raw_read;
+
+	}
+	else if (LIGHT_SENSOR_TYPE == 3)
+	{
+		luxes = 1023 - adc_raw_read;
+
+	}
+	   
+
+	printf("Luxes: %g\n", luxes);
+	printf("ADC: %g\n",(float) sdk_system_adc_read());
+
+    if (luxes < 0.0001f) {
+        luxes = 0.0001f;
+    } else if (luxes > 100000.f) {
+        luxes = 100000.f;
+    }
+
+ 
+   return luxes;
+}
+
+
 
 //####################################################################################
 //LED codes
@@ -464,7 +545,9 @@ void update_state() {
 	else
 	{	
 		if(target_state == 0){
+		taskENTER_CRITICAL();
 		ac_button_aut();
+		taskEXIT_CRITICAL();
 		led_status_signal(led_status, &three_short_blinks);
 		}
 		else if ((target_state + 1 )!=current_state){
@@ -526,7 +609,11 @@ void update_temp() {
 
 	sysparam_set_int8("ac_mode",target_state);
 	sysparam_set_int8("ac_temp",(int)target_temp1);
+	
+	taskENTER_CRITICAL();
  	ac_command(target_state,target_temp1);
+	taskEXIT_CRITICAL();
+	
 	led_status_signal(led_status, &three_short_blinks);
 
 }
@@ -545,7 +632,9 @@ void update_active() {
 	{
 		if (target_state == 0)
 		{
+			taskENTER_CRITICAL();
 			ac_button_aut();
+			taskEXIT_CRITICAL();
 			led_status_signal(led_status, &three_short_blinks);
 		}
 		else
@@ -557,7 +646,9 @@ void update_active() {
 	//If it is requested to turn off  
 	if (active_status == 0  ) {
 	//	printf("OFF\n" );
+	taskENTER_CRITICAL();
 	ac_button_off();
+	taskEXIT_CRITICAL();
 	led_status_signal(led_status, &three_short_blinks);
 	}
 
@@ -630,7 +721,6 @@ sysparam_status_t status;
 	status = sysparam_get_string("FIELD2",&FIELD2);
 
 
-	
 }
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -914,7 +1004,11 @@ void sensor_worker() {
 	//printf("Checking Light\n");
 	//Light measurement
 	float light_value;
-	light_value = sdk_system_adc_read();
+	//light_value = sdk_system_adc_read();
+
+		//New version thanks to @Ravensystem and HAA 3.7.0, 5.0.4
+		light_value = light_sensor_task();
+	
 	 	 if (light_value != old_light_value) 
 		 {
 		 old_light_value = light_value;
@@ -922,11 +1016,11 @@ void sensor_worker() {
 		 //homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT((1024 - light_value))); 
 		currentAmbientLightLevel.value.float_value = ( light_value);
 		homekit_characteristic_notify(&currentAmbientLightLevel, HOMEKIT_FLOAT(( light_value))); 
-		
 		}
-		
-	//	uint32_t freeheap = xPortGetFreeHeapSize();
-    //printf("xPortGetFreeHeapSize = %d bytes\n", freeheap);
+
+
+
+
 	 
 
 }
@@ -1282,19 +1376,19 @@ void on_wifi_event(wifi_config_event_t event) {
 		Wifi_Connected=true;
 
 		create_accessory_name();
-	//  	if (homekit_is_paired()){
-	//	char *custom_hostname = name.value.string_value;
-	//	struct netif *netif = sdk_system_get_netif(STATION_IF);
-	//		if (netif) {
-	//			printf("HOSTNAME set>>>>>:%s\n", custom_hostname);
-	//			LOCK_TCPIP_CORE();
-	//			dhcp_release_and_stop(netif);
-	//			netif->hostname = "foobar";
-	//			netif->hostname =custom_hostname;
-	//			dhcp_start(netif);
-	//			UNLOCK_TCPIP_CORE();
-	//		}
-	//	}
+			// 	if (homekit_is_paired()){
+			// 	char *custom_hostname = name.value.string_value;
+			// 	struct netif *netif = sdk_system_get_netif(STATION_IF);
+			// 		if (netif) {
+			// 			printf("HOSTNAME set>>>>>:%s\n", custom_hostname);
+			// 			LOCK_TCPIP_CORE();
+			// 			dhcp_release_and_stop(netif);
+			// 			netif->hostname = "foobar";
+			// 			netif->hostname =custom_hostname;
+			// 			dhcp_start(netif);
+			// 			UNLOCK_TCPIP_CORE();
+			// 		 }
+			// }
 			//OTA
 			int c_hash=ota_read_sysparam(&manufacturer.value.string_value,&serial.value.string_value,
 											&model.value.string_value,&revision.value.string_value);
@@ -1343,6 +1437,9 @@ void user_init(void) {
     uart_set_baud(0, 115200);
     printf("SDK version:%s\n", sdk_system_get_sdk_version());
 	hardware_init();
+
+
+
 	//wifi_config_init("Homekit-sensor", NULL, on_wifi_ready);
 	wifi_config_init2("Homekit-Sensor", NULL, on_wifi_event);
   
