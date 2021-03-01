@@ -43,9 +43,9 @@ If you are going to use IR, you need to supply your own set of RAW commands for 
 * 1 wemos d1 mini
 * 1 DHT22 sensor
 * 1 AM312 PIR sensor
-* 1 LDR
+* 1 LDR (i.e. a GL5528)
 * 3 Resistors (18 Ohm, 2.2K, 10K)
 * 1 NPN transistor 2N2222
-* 1 IR LED (Had good resutls with TSAL6200)
+* 1 IR LED (Had good results with TSAL6200)
 * 1 push button (is used for homekit reset) 
 
